@@ -37,10 +37,12 @@ class JFunctionApp:
         self.root.title("Расчёт J-функции, SWn и коэффициентов a, b")
         self.root.geometry("1050x720")
 
+        self.raw_df: pd.DataFrame | None = None
         self.df: pd.DataFrame | None = None
         self.const = JFunctionConstants()
 
         self._build_widgets()
+        self._update_cos_labels()
 
     # ------------------------------------------------------------------ UI
 
@@ -53,22 +55,27 @@ class JFunctionApp:
         self.file_label.pack(side="left", padx=10)
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export).pack(side="right")
 
-        filt = ttk.LabelFrame(self.root, text="Фильтр", padding=8)
-        filt.pack(fill="x", padx=8, pady=4)
+        middle = ttk.Frame(self.root)
+        middle.pack(fill="x", padx=8, pady=4)
+
+        filt = ttk.LabelFrame(middle, text="Фильтр", padding=8)
+        filt.pack(side="left", fill="y")
 
         ttk.Label(filt, text="Скважина:").grid(row=0, column=0, sticky="w")
         self.well_var = tk.StringVar(value=ALL)
         self.well_combo = ttk.Combobox(filt, textvariable=self.well_var, state="readonly", values=[ALL], width=15)
-        self.well_combo.grid(row=0, column=1, padx=6)
+        self.well_combo.grid(row=0, column=1, padx=6, pady=2)
         self.well_combo.bind("<<ComboboxSelected>>", lambda _e: self.recompute())
 
-        ttk.Label(filt, text="Горизонт:").grid(row=0, column=2, sticky="w", padx=(20, 0))
+        ttk.Label(filt, text="Горизонт:").grid(row=1, column=0, sticky="w")
         self.horizon_var = tk.StringVar(value=ALL)
         self.horizon_combo = ttk.Combobox(
             filt, textvariable=self.horizon_var, state="readonly", values=[ALL], width=15
         )
-        self.horizon_combo.grid(row=0, column=3, padx=6)
+        self.horizon_combo.grid(row=1, column=1, padx=6, pady=2)
         self.horizon_combo.bind("<<ComboboxSelected>>", lambda _e: self.recompute())
+
+        self._build_constants_panel(middle)
 
         self.result_label = ttk.Label(
             self.root, text="Загрузите файл с лабораторными данными.", font=("Segoe UI", 11, "bold")
@@ -97,7 +104,75 @@ class JFunctionApp:
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
+    def _build_constants_panel(self, parent: ttk.Widget) -> None:
+        """Панель "Константы J-функции" - таблица, как в исходном Excel, с полями для правки."""
+        panel = ttk.LabelFrame(parent, text="Константы J-функции", padding=8)
+        panel.pack(side="left", fill="y", padx=(10, 0))
+
+        self.theta_lab_var = tk.StringVar(value=str(self.const.theta_lab_deg))
+        self.gamma_lab_var = tk.StringVar(value=str(self.const.gamma_lab))
+        self.theta_res_var = tk.StringVar(value=str(self.const.theta_res_deg))
+        self.gamma_res_var = tk.StringVar(value=str(self.const.gamma_res))
+        self.coeff_var = tk.StringVar(value=str(self.const.coeff))
+        self.cos_lab_var = tk.StringVar()
+        self.cos_res_var = tk.StringVar()
+
+        rows = [
+            ("Угол смач-ти лаб (θ_лаб), град", self.theta_lab_var, True),
+            ("ПНС лаб (γ_лаб), дин/см", self.gamma_lab_var, True),
+            ("Угол смач-ти рез (θ_рез), град", self.theta_res_var, True),
+            ("ПНС рез (γ_рез), дин/см", self.gamma_res_var, True),
+            ("cos θ_лаб", self.cos_lab_var, False),
+            ("cos θ_рез", self.cos_res_var, False),
+            ("Коэфф.", self.coeff_var, True),
+        ]
+        for r, (label, var, editable) in enumerate(rows):
+            ttk.Label(panel, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=1)
+            if editable:
+                ttk.Entry(panel, textvariable=var, width=10, justify="right").grid(row=r, column=1, pady=1)
+            else:
+                ttk.Entry(panel, textvariable=var, width=10, justify="right", state="readonly").grid(
+                    row=r, column=1, pady=1
+                )
+
+        ttk.Button(panel, text="Применить константы", command=self.on_apply_constants).grid(
+            row=len(rows), column=0, columnspan=2, pady=(6, 0), sticky="we"
+        )
+
+    def _update_cos_labels(self) -> None:
+        self.cos_lab_var.set(f"{self.const.cos_theta_lab:.6f}")
+        self.cos_res_var.set(f"{self.const.cos_theta_res:.6f}")
+
+    def on_apply_constants(self) -> None:
+        try:
+            new_const = JFunctionConstants(
+                theta_lab_deg=float(self.theta_lab_var.get()),
+                gamma_lab=float(self.gamma_lab_var.get()),
+                theta_res_deg=float(self.theta_res_var.get()),
+                gamma_res=float(self.gamma_res_var.get()),
+                coeff=float(self.coeff_var.get()),
+            )
+        except ValueError:
+            messagebox.showerror("Ошибка", "Все константы J-функции должны быть числами.")
+            return
+
+        self.const = new_const
+        self._update_cos_labels()
+        if self._recompute_from_raw():
+            self.recompute()
+
     # ------------------------------------------------------------- actions
+
+    def _recompute_from_raw(self) -> bool:
+        """Пересчитывает Pc(рез), SWn, J из исходных данных с текущими константами."""
+        if self.raw_df is None:
+            return False
+        try:
+            self.df = add_derived_columns(self.raw_df, self.const)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка расчёта", str(exc))
+            return False
+        return True
 
     def on_load(self) -> None:
         path = filedialog.askopenfilename(
@@ -107,13 +182,16 @@ class JFunctionApp:
         if not path:
             return
         try:
-            df = load_lab_data(path)
-            df = add_derived_columns(df, self.const)
+            raw_df = load_lab_data(path)
         except Exception as exc:  # noqa: BLE001 - показываем пользователю любую ошибку загрузки
             messagebox.showerror("Ошибка загрузки", str(exc))
             return
 
-        self.df = df
+        self.raw_df = raw_df
+        if not self._recompute_from_raw():
+            return
+
+        df = self.df
         self.file_label.config(text=f"{Path(path).name}  ({len(df)} строк)")
 
         wells = [ALL] + sorted(df["well"].dropna().astype(str).unique()) if "well" in df.columns else [ALL]
