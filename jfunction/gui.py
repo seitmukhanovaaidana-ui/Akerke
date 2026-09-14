@@ -81,6 +81,7 @@ class JFunctionApp:
         self.horizon_combo.bind("<<ComboboxSelected>>", lambda _e: self.recompute())
 
         self._build_constants_panel(middle)
+        self._build_result_panel(middle)
 
         self.result_label = tk.Label(
             self.root,
@@ -150,6 +151,29 @@ class JFunctionApp:
         ttk.Button(panel, text="Применить константы", command=self.on_apply_constants).grid(
             row=len(rows), column=0, columnspan=2, pady=(6, 0), sticky="we"
         )
+
+    def _build_result_panel(self, parent: ttk.Widget) -> None:
+        """Панель "Результат" - a, b, n, R² каждый в своём отдельном окошке."""
+        panel = ttk.LabelFrame(parent, text="Результат: J(SWn) = a·exp(b·SWn)", padding=8)
+        panel.pack(side="left", fill="y", padx=(10, 0))
+
+        self.a_var = tk.StringVar(value="-")
+        self.b_var = tk.StringVar(value="-")
+        self.n_var = tk.StringVar(value="-")
+        self.r2_var = tk.StringVar(value="-")
+
+        rows = [
+            ("a", self.a_var),
+            ("b", self.b_var),
+            ("n (число точек)", self.n_var),
+            ("R² (качество подгонки)", self.r2_var),
+        ]
+        for r, (label, var) in enumerate(rows):
+            ttk.Label(panel, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+            ttk.Entry(
+                panel, textvariable=var, width=12, justify="right", state="readonly",
+                font=("Segoe UI", 11, "bold"),
+            ).grid(row=r, column=1, pady=3)
 
     def _update_cos_labels(self) -> None:
         self.cos_lab_var.set(f"{self.const.cos_theta_lab:.6f}")
@@ -231,6 +255,8 @@ class JFunctionApp:
         df = self._filtered()
         if df is None or df.empty:
             self.result_label.config(text="Нет данных для отображения.")
+            for var in (self.a_var, self.b_var, self.n_var, self.r2_var):
+                var.set("-")
             return
 
         try:
@@ -246,6 +272,13 @@ class JFunctionApp:
                     f"(J(SWn) = a·exp(b·SWn), n={fit.n}, R²={fit.r2:.4f})"
                 )
             )
+            self.a_var.set(f"{fit.a:.4f}")
+            self.b_var.set(f"{fit.b:.4f}")
+            self.n_var.set(str(fit.n))
+            self.r2_var.set(f"{fit.r2:.4f}")
+        else:
+            for var in (self.a_var, self.b_var, self.n_var, self.r2_var):
+                var.set("-")
 
         self._update_plot(df, fit)
         self._update_table(df)
