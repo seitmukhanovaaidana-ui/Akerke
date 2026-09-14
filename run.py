@@ -19,6 +19,7 @@ from pathlib import Path
 
 from jfunction.calc import JFunctionConstants, add_derived_columns
 from jfunction.fit import FitResult, fit_by_group
+from jfunction.horizon import assign_horizon_by_depth, load_horizon_map
 from jfunction.io import load_lab_data
 from jfunction.report import plot_j_function, save_results
 
@@ -40,6 +41,10 @@ def parse_args() -> argparse.Namespace:
                    help="Степень при проницаемости (Power for permeability term в Petrel, по умолч. 0.5)")
     p.add_argument("--poro-power", type=float, default=0.5,
                    help="Степень при пористости (Power for porosity term в Petrel, по умолч. 0.5)")
+    p.add_argument("--horizon-map", default=None,
+                   help="Файл разметки горизонтов по глубине (столбцы well, depth_from, depth_to, "
+                        "horizon) - проставляет/переопределяет horizon по глубине образца. "
+                        "Полезно, когда исходные данные (например, .docx) не содержат горизонт.")
 
     return p.parse_args()
 
@@ -61,6 +66,10 @@ def main() -> None:
     print(f"Читаю лабораторные данные: {args.input}")
     df = load_lab_data(args.input)
     print(f"  строк: {len(df)}")
+
+    if args.horizon_map:
+        print(f"Проставляю горизонт по глубине из: {args.horizon_map}")
+        df = assign_horizon_by_depth(df, load_horizon_map(args.horizon_map))
 
     print("Считаю Pc(рез), SWn, J(Sw) ...")
     df = add_derived_columns(df, const)
