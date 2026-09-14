@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--theta-res", type=float, default=30.0, help="Угол смачивания, резервуар, град (по умолч. 30)")
     p.add_argument("--gamma-res", type=float, default=30.0, help="Пов. натяжение, резервуар, дин/см (по умолч. 30)")
     p.add_argument("--coeff", type=float, default=3.183, help="Переводной коэффициент J-функции (по умолч. 3.183)")
+    p.add_argument("--perm-power", type=float, default=0.5,
+                   help="Степень при проницаемости (Power for permeability term в Petrel, по умолч. 0.5)")
+    p.add_argument("--poro-power", type=float, default=0.5,
+                   help="Степень при пористости (Power for porosity term в Petrel, по умолч. 0.5)")
 
     return p.parse_args()
 
@@ -50,6 +54,8 @@ def main() -> None:
         theta_res_deg=args.theta_res,
         gamma_res=args.gamma_res,
         coeff=args.coeff,
+        perm_power=args.perm_power,
+        poro_power=args.poro_power,
     )
 
     print(f"Читаю лабораторные данные: {args.input}")

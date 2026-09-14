@@ -134,6 +134,8 @@ class JFunctionApp:
         self.theta_res_var = tk.StringVar(value=_fmt_num(self.const.theta_res_deg))
         self.gamma_res_var = tk.StringVar(value=_fmt_num(self.const.gamma_res))
         self.coeff_var = tk.StringVar(value=_fmt_num(self.const.coeff))
+        self.perm_power_var = tk.StringVar(value=_fmt_num(self.const.perm_power))
+        self.poro_power_var = tk.StringVar(value=_fmt_num(self.const.poro_power))
         self.cos_lab_var = tk.StringVar()
         self.cos_res_var = tk.StringVar()
 
@@ -145,6 +147,8 @@ class JFunctionApp:
             ("cos θ_лаб", self.cos_lab_var, False),
             ("cos θ_рез", self.cos_res_var, False),
             ("Коэфф.", self.coeff_var, True),
+            ("Power for permeability term", self.perm_power_var, True),
+            ("Power for porosity term", self.poro_power_var, True),
         ]
         for r, (label, var, editable) in enumerate(rows):
             ttk.Label(panel, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=1)
@@ -219,6 +223,8 @@ class JFunctionApp:
                 theta_res_deg=float(self.theta_res_var.get()),
                 gamma_res=float(self.gamma_res_var.get()),
                 coeff=float(self.coeff_var.get()),
+                perm_power=float(self.perm_power_var.get()),
+                poro_power=float(self.poro_power_var.get()),
             )
         except ValueError:
             messagebox.showerror("Ошибка", "Все константы J-функции должны быть числами.")

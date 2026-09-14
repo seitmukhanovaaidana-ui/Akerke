@@ -146,14 +146,22 @@ python run.py --input examples/lab_data_example.csv --output-dir results
 ### Настройка констант J-функции
 
 Если для ваших данных отличаются угол смачивания/поверхностное
-натяжение или переводной коэффициент, задайте их флагами:
+натяжение, переводной коэффициент или степени при пористости/
+проницаемости, задайте их флагами:
 
 ```
 python run.py --input data.csv --output-dir results \
-    --theta-lab 30 --gamma-lab 48 --theta-res 30 --gamma-res 30 --coeff 3.183
+    --theta-lab 30 --gamma-lab 48 --theta-res 30 --gamma-res 30 --coeff 3.183 \
+    --perm-power 0.5 --poro-power 0.5
 ```
 
-Это значения по умолчанию (взяты из вашего файла). Флаг `--group-col`
+Это значения по умолчанию (взяты из вашего файла). `--perm-power` и
+`--poro-power` соответствуют полям **"Power for permeability term"** и
+**"Power for porosity term"** на вкладке "J-function parameters" в
+Petrel: по умолчанию обе равны 0.5, что даёт классическую формулу
+Леверетта (квадратный корень); если в Petrel эти степени изменены -
+укажите те же значения здесь, иначе a, b не будут соответствовать
+формуле, которую реально использует Petrel. Флаг `--group-col`
 позволяет группировать не по `horizon`, а по любому другому столбцу
 (например `well`), либо отключить группировку (`--group-col ""`).
 
@@ -162,10 +170,14 @@ python run.py --input data.csv --output-dir results \
 ```
 Pc(рез)[атм] = Pc_lab[МПа] * 9.8692327 * (γ_рез·cosθ_рез) / (γ_лаб·cosθ_лаб)
 
-J(Sw) = coeff * Pc(рез) * sqrt(perm_mD / (porosity_pct/100)) / (γ_рез·cosθ_рез)
+J(Sw) = coeff * Pc(рез) * perm_mD^perm_power / (porosity_pct/100)^poro_power
+              / (γ_рез·cosθ_рез)
 
 SWn = (Sw - Swir) / (1 - Swir)
 ```
+
+При `perm_power = poro_power = 0.5` (по умолчанию) это в точности
+классическая формула Леверетта `sqrt(perm_mD/(porosity_pct/100))`.
 
 Коэффициенты `a, b` находятся линеаризацией: `ln(J) = ln(a) + b·SWn`,
 методом наименьших квадратов по всем точкам, где `J > 0`.

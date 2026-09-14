@@ -13,13 +13,17 @@
     Pc(рез)[атм] = Pc_lab[МПа] * 9.8692327 * (gamma_res*cos(theta_res))
                                             / (gamma_lab*cos(theta_lab))
 
-    J(Sw) = coeff * Pc(рез) * sqrt(perm_mD / (porosity_pct/100))
+    J(Sw) = coeff * Pc(рез) * perm_mD^perm_power / (porosity_pct/100)^poro_power
                    / (gamma_res * cos(theta_res))
 
     SWn = (Sw - Swir) / (1 - Swir)
 
 где Swir - остаточная (необразованная) водонасыщенность образца,
-    coeff = 3.183 (переводной коэффициент, как в исходном файле).
+    coeff = 3.183 (переводной коэффициент, как в исходном файле),
+    perm_power, poro_power - степени при проницаемости и пористости
+    (по умолчанию 0.5/0.5 - классическая формула Леверетта, sqrt(k/phi);
+    в Petrel это поля "Power for permeability term" / "Power for porosity
+    term" на вкладке J-function parameters, и они могут отличаться от 0.5).
 """
 
 from __future__ import annotations
@@ -42,6 +46,8 @@ class JFunctionConstants:
     theta_res_deg: float = 30.0
     gamma_res: float = 30.0
     coeff: float = 3.183
+    perm_power: float = 0.5
+    poro_power: float = 0.5
 
     @property
     def cos_theta_lab(self) -> float:
@@ -59,11 +65,15 @@ def compute_pc_res(pc_lab_mpa, const: JFunctionConstants):
 
 
 def compute_j(pc_res_atm, porosity_pct, perm_mD, const: JFunctionConstants):
-    """Значение J-функции Леверетта."""
+    """
+    Значение J-функции. При perm_power = poro_power = 0.5 (по умолчанию)
+    это классическая формула Леверетта J = Pc/(σcosθ) * sqrt(k/φ).
+    """
     return (
         const.coeff
         * pc_res_atm
-        * np.sqrt(perm_mD / (porosity_pct / 100.0))
+        * np.power(perm_mD, const.perm_power)
+        * np.power(porosity_pct / 100.0, -const.poro_power)
         / (const.gamma_res * const.cos_theta_res)
     )
 

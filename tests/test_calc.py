@@ -48,6 +48,30 @@ def test_matches_excel_reference_sample():
     np.testing.assert_allclose(result["J"], expected_j, rtol=1e-9)
 
 
+def test_custom_perm_and_poro_powers():
+    """Petrel's "Power for permeability/porosity term" can differ from 0.5."""
+    const = JFunctionConstants(
+        theta_lab_deg=30, gamma_lab=48, theta_res_deg=30, gamma_res=30, coeff=3.183,
+        perm_power=1.0, poro_power=0.0,
+    )
+    df = pd.DataFrame(
+        {
+            "well": ["300"],
+            "sample": ["s1"],
+            "Sw": [0.95],
+            "Pc_lab_MPa": [0.006],
+            "porosity_pct": [31.04],
+            "perm_mD": [5.83],
+            "Swir": [0.4],
+        }
+    )
+    result = add_derived_columns(df, const)
+
+    pc_res = 0.037009622625  # то же Pc(рез), от constants не зависит perm/poro power
+    expected_j = const.coeff * pc_res * (5.83**1.0) / ((31.04 / 100.0) ** 0.0) / (const.gamma_res * const.cos_theta_res)
+    np.testing.assert_allclose(result["J"].iloc[0], expected_j, rtol=1e-9)
+
+
 def test_swn_zero_at_swir_and_one_at_sw_equal_one():
     df = pd.DataFrame(
         {
