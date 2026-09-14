@@ -24,7 +24,6 @@ from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
-from .horizon import assign_horizon_by_depth, load_horizon_map
 from .io import load_lab_data
 from .report import save_results
 from .rocktype import classify_by_permeability
@@ -49,7 +48,6 @@ class JFunctionApp:
         self.df: pd.DataFrame | None = None
         self.const = JFunctionConstants()
         self.pinned_trends: list[dict] = []
-        self.horizon_map: pd.DataFrame | None = None
 
         self._build_widgets()
         self._update_cos_labels()
@@ -63,11 +61,6 @@ class JFunctionApp:
         ttk.Button(top, text="Загрузить данные...", command=self.on_load).pack(side="left")
         self.file_label = ttk.Label(top, text="Файл не загружен")
         self.file_label.pack(side="left", padx=10)
-        ttk.Button(top, text="Разметка горизонтов по глубине...", command=self.on_load_horizon_map).pack(
-            side="left", padx=10
-        )
-        self.horizon_map_label = ttk.Label(top, text="")
-        self.horizon_map_label.pack(side="left")
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export).pack(side="right")
         ttk.Button(top, text="Сохранить график...", command=self.on_save_chart).pack(side="right", padx=(0, 8))
 
@@ -425,45 +418,12 @@ class JFunctionApp:
         """Пересчитывает Pc(рез), SWn, J из исходных данных с текущими константами."""
         if self.raw_df is None:
             return False
-        df = self.raw_df
-        if self.horizon_map is not None:
-            try:
-                df = assign_horizon_by_depth(df, self.horizon_map)
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror("Ошибка разметки горизонтов", str(exc))
-                return False
         try:
-            self.df = add_derived_columns(df, self.const)
+            self.df = add_derived_columns(self.raw_df, self.const)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка расчёта", str(exc))
             return False
         return True
-
-    def on_load_horizon_map(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Выберите файл разметки горизонтов (столбцы: well, depth_from, depth_to, horizon)",
-            filetypes=[("Таблицы", "*.csv *.xlsx *.xls"), ("Все файлы", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            self.horizon_map = load_horizon_map(path)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Ошибка загрузки разметки", str(exc))
-            return
-
-        self.horizon_map_label.config(text=Path(path).name)
-
-        if self.raw_df is None or not self._recompute_from_raw():
-            return
-
-        df = self.df
-        horizons = (
-            [ALL] + sorted(df["horizon"].dropna().astype(str).unique()) if "horizon" in df.columns else [ALL]
-        )
-        self.horizon_combo["values"] = horizons
-        self.horizon_var.set(ALL)
-        self.recompute()
 
     def on_load(self) -> None:
         path = filedialog.askopenfilename(
