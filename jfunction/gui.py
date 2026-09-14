@@ -31,6 +31,11 @@ ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
 
 
+def _fmt_num(value: float) -> str:
+    """Целые числа показываем без ".0" (30, а не 30.0) - как в исходном Excel."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
 class JFunctionApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -116,11 +121,11 @@ class JFunctionApp:
         panel = ttk.LabelFrame(parent, text="Константы J-функции", padding=8)
         panel.pack(side="left", fill="y", padx=(10, 0))
 
-        self.theta_lab_var = tk.StringVar(value=str(self.const.theta_lab_deg))
-        self.gamma_lab_var = tk.StringVar(value=str(self.const.gamma_lab))
-        self.theta_res_var = tk.StringVar(value=str(self.const.theta_res_deg))
-        self.gamma_res_var = tk.StringVar(value=str(self.const.gamma_res))
-        self.coeff_var = tk.StringVar(value=str(self.const.coeff))
+        self.theta_lab_var = tk.StringVar(value=_fmt_num(self.const.theta_lab_deg))
+        self.gamma_lab_var = tk.StringVar(value=_fmt_num(self.const.gamma_lab))
+        self.theta_res_var = tk.StringVar(value=_fmt_num(self.const.theta_res_deg))
+        self.gamma_res_var = tk.StringVar(value=_fmt_num(self.const.gamma_res))
+        self.coeff_var = tk.StringVar(value=_fmt_num(self.const.coeff))
         self.cos_lab_var = tk.StringVar()
         self.cos_res_var = tk.StringVar()
 
