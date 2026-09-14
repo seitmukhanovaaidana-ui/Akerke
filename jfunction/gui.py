@@ -59,6 +59,7 @@ class JFunctionApp:
         self.file_label = ttk.Label(top, text="Файл не загружен")
         self.file_label.pack(side="left", padx=10)
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export).pack(side="right")
+        ttk.Button(top, text="Сохранить график...", command=self.on_save_chart).pack(side="right", padx=(0, 8))
 
         middle = ttk.Frame(self.root)
         middle.pack(fill="x", padx=8, pady=4)
@@ -312,6 +313,27 @@ class JFunctionApp:
         for _, row in df.head(500).iterrows():
             self.tree.insert("", "end", values=[row.get(col, "") for col in TABLE_COLUMNS])
 
+    def on_save_chart(self) -> None:
+        if self.df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите данные.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить график как...",
+            defaultextension=".png",
+            filetypes=[("Изображение PNG", "*.png"), ("PDF", "*.pdf"), ("Все файлы", "*.*")],
+            initialfile="j_function_plot.png",
+        )
+        if not path:
+            return
+
+        try:
+            self.figure.savefig(path, dpi=200, bbox_inches="tight")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка сохранения графика", str(exc))
+            return
+        messagebox.showinfo("Готово", f"График сохранён:\n{path}")
+
     def on_export(self) -> None:
         df = self._filtered()
         if df is None or df.empty:
@@ -328,7 +350,9 @@ class JFunctionApp:
                 [{"group": "Текущий фильтр", "n": fit.n, "a": fit.a, "b": fit.b, "r2": fit.r2}]
             )
             points_path, coeffs_path = save_results(df, coeffs, out_dir)
-            messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}")
+            plot_path = Path(out_dir) / "j_function_plot.png"
+            self.figure.savefig(plot_path, dpi=200, bbox_inches="tight")
+            messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}\n{plot_path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
 
