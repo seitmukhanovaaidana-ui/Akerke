@@ -66,6 +66,18 @@ def plot_j_function(
                 linewidth=2,
                 label=f"{name}: {fit}",
             )
+            ax.text(
+                0.97,
+                0.95 - i * 0.09,
+                f"{name}: y = {fit.a:.4f}e^{fit.b:.4f}x",
+                transform=ax.transAxes,
+                fontsize=10,
+                fontweight="bold",
+                color="white",
+                ha="right",
+                va="top",
+                bbox=dict(boxstyle="round,pad=0.35", facecolor=color, edgecolor="none", alpha=0.9),
+            )
 
     ax.set_ylim(bottom=0)
     ax.set_xlabel("SWn (нормализованная водонасыщенность)")

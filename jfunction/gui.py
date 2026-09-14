@@ -77,8 +77,15 @@ class JFunctionApp:
 
         self._build_constants_panel(middle)
 
-        self.result_label = ttk.Label(
-            self.root, text="Загрузите файл с лабораторными данными.", font=("Segoe UI", 11, "bold")
+        self.result_label = tk.Label(
+            self.root,
+            text="Загрузите файл с лабораторными данными.",
+            font=("Segoe UI", 13, "bold"),
+            bg="#ED7D31",
+            fg="white",
+            anchor="w",
+            padx=12,
+            pady=8,
         )
         self.result_label.pack(fill="x", padx=8, pady=6)
 
@@ -229,7 +236,10 @@ class JFunctionApp:
 
         if fit is not None:
             self.result_label.config(
-                text=f"J(SWn) = {fit.a:.4f} · exp({fit.b:.4f} · SWn)   (n={fit.n}, R²={fit.r2:.4f})"
+                text=(
+                    f"y = {fit.a:.4f}·e^{fit.b:.4f}x    "
+                    f"(J(SWn) = a·exp(b·SWn), n={fit.n}, R²={fit.r2:.4f})"
+                )
             )
 
         self._update_plot(df, fit)
@@ -241,6 +251,16 @@ class JFunctionApp:
         if fit is not None:
             swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
             self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2, label="тренд")
+            self.ax.text(
+                0.4,
+                0.7,
+                f"y = {fit.a:.4f}e^{fit.b:.4f}x",
+                transform=self.ax.transAxes,
+                fontsize=15,
+                color="black",
+                ha="center",
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="#ED7D31", edgecolor="none", alpha=0.95),
+            )
         self.ax.set_ylim(bottom=0)
         self.ax.set_xlabel("SWn")
         self.ax.set_ylabel("J(Sw)")
