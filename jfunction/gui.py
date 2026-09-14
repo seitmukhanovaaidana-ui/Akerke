@@ -23,9 +23,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
-from .fit import evaluate_fixed_params, fit_exponential
+from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .report import save_results
+from .rocktype import classify_by_permeability
 
 ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
@@ -102,11 +103,14 @@ class JFunctionApp:
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="both", expand=True, padx=8, pady=4)
+        self.notebook = notebook
 
         chart_tab = ttk.Frame(notebook)
         table_tab = ttk.Frame(notebook)
+        rocktype_tab = ttk.Frame(notebook)
         notebook.add(chart_tab, text="График")
         notebook.add(table_tab, text="Таблица точек")
+        notebook.add(rocktype_tab, text="Типы пород (k-φ)")
 
         self.figure = Figure(figsize=(6, 5), dpi=100)
         self.ax = self.figure.add_subplot(111)
@@ -127,6 +131,85 @@ class JFunctionApp:
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+
+        self._build_rocktype_tab(rocktype_tab)
+
+    def _build_rocktype_tab(self, parent: ttk.Widget) -> None:
+        """Кроссплот k-φ и разбиение образцов на типы породы по проницаемости."""
+        top = ttk.Frame(parent, padding=8)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Границы проницаемости, мД (через запятую):").pack(side="left")
+        self.rocktype_breaks_var = tk.StringVar(value="1, 10, 100")
+        ttk.Entry(top, textvariable=self.rocktype_breaks_var, width=20).pack(side="left", padx=6)
+        ttk.Button(top, text="Разбить на типы породы", command=self.on_apply_rocktype).pack(side="left")
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.rocktype_figure = Figure(figsize=(5, 4), dpi=100)
+        self.rocktype_ax = self.rocktype_figure.add_subplot(111)
+        self.rocktype_canvas = FigureCanvasTkAgg(self.rocktype_figure, master=body)
+        self.rocktype_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        rt_columns = ("group", "n", "a", "b", "r2")
+        self.rocktype_tree = ttk.Treeview(body, columns=rt_columns, show="headings", height=15)
+        for col in rt_columns:
+            self.rocktype_tree.heading(col, text=col)
+            self.rocktype_tree.column(col, width=90, anchor="center")
+        self.rocktype_tree.pack(side="left", fill="y", padx=(8, 0))
+
+    def on_apply_rocktype(self) -> None:
+        df = self._filtered()
+        if df is None or df.empty:
+            messagebox.showwarning("Нет данных", "Сначала загрузите данные.")
+            return
+
+        try:
+            breaks = [float(x.strip()) for x in self.rocktype_breaks_var.get().split(",") if x.strip()]
+        except ValueError:
+            messagebox.showerror("Ошибка", "Границы проницаемости должны быть числами через запятую.")
+            return
+        if not breaks:
+            messagebox.showerror("Ошибка", "Укажите хотя бы одну границу проницаемости (мД).")
+            return
+
+        df = df.copy()
+        df["rock_type"] = classify_by_permeability(df["perm_mD"], breaks)
+
+        coeffs = fit_by_group(df, "rock_type")
+        self._update_rocktype_table(coeffs)
+        self._update_rocktype_plot(df, color_col="rock_type")
+
+    def _update_rocktype_table(self, coeffs: pd.DataFrame) -> None:
+        self.rocktype_tree.delete(*self.rocktype_tree.get_children())
+        for _, row in coeffs.iterrows():
+            self.rocktype_tree.insert(
+                "",
+                "end",
+                values=(row["group"], row["n"], f"{row['a']:.4f}", f"{row['b']:.4f}", f"{row['r2']:.4f}"),
+            )
+
+    def _update_rocktype_plot(self, df: pd.DataFrame, color_col: str | None = None) -> None:
+        self.rocktype_ax.clear()
+        samples = df.drop_duplicates(subset=["well", "sample"]) if "sample" in df.columns else df
+
+        if color_col is not None and color_col in samples.columns:
+            for i, (name, sub) in enumerate(samples.groupby(color_col, observed=True)):
+                color = PINNED_COLORS[i % len(PINNED_COLORS)]
+                self.rocktype_ax.scatter(
+                    sub["porosity_pct"], sub["perm_mD"], s=20, alpha=0.7, color=color, label=str(name)
+                )
+            self.rocktype_ax.legend(fontsize=8, title="Тип породы", loc="best")
+        else:
+            self.rocktype_ax.scatter(samples["porosity_pct"], samples["perm_mD"], s=20, alpha=0.7)
+
+        self.rocktype_ax.set_yscale("log")
+        self.rocktype_ax.set_xlabel("Пористость, %")
+        self.rocktype_ax.set_ylabel("Проницаемость, мД")
+        self.rocktype_ax.set_title("Кроссплот k-φ")
+        self.rocktype_ax.grid(True, which="both", alpha=0.3)
+        self.rocktype_canvas.draw()
 
     def _build_constants_panel(self, parent: ttk.Widget) -> None:
         """Панель "Константы J-функции" - таблица, как в исходном Excel, с полями для правки."""
@@ -391,6 +474,9 @@ class JFunctionApp:
 
         self._update_plot(df, fit)
         self._update_table(df)
+        color_col = "horizon" if "horizon" in df.columns else None
+        self._update_rocktype_plot(df, color_col=color_col)
+        self.rocktype_tree.delete(*self.rocktype_tree.get_children())
 
     def _update_plot(self, df: pd.DataFrame, fit) -> None:
         self.ax.clear()
