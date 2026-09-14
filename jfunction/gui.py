@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
-from .fit import fit_exponential
+from .fit import evaluate_fixed_params, fit_exponential
 from .io import load_lab_data
 from .report import save_results
 
@@ -162,19 +162,44 @@ class JFunctionApp:
         self.b_var = tk.StringVar(value="-")
         self.n_var = tk.StringVar(value="-")
         self.r2_var = tk.StringVar(value="-")
+        self.manual_ab_var = tk.BooleanVar(value=False)
 
-        rows = [
-            ("a", self.a_var),
-            ("b", self.b_var),
-            ("n (число точек)", self.n_var),
-            ("R² (качество подгонки)", self.r2_var),
-        ]
-        for r, (label, var) in enumerate(rows):
-            ttk.Label(panel, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
-            ttk.Entry(
-                panel, textvariable=var, width=12, justify="right", state="readonly",
-                font=("Segoe UI", 11, "bold"),
-            ).grid(row=r, column=1, pady=3)
+        bold = ("Segoe UI", 11, "bold")
+        ttk.Label(panel, text="a").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.a_entry = ttk.Entry(panel, textvariable=self.a_var, width=12, justify="right",
+                                  state="readonly", font=bold)
+        self.a_entry.grid(row=0, column=1, pady=3)
+        self.a_entry.bind("<Return>", lambda _e: self.recompute())
+
+        ttk.Label(panel, text="b").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.b_entry = ttk.Entry(panel, textvariable=self.b_var, width=12, justify="right",
+                                  state="readonly", font=bold)
+        self.b_entry.grid(row=1, column=1, pady=3)
+        self.b_entry.bind("<Return>", lambda _e: self.recompute())
+
+        ttk.Label(panel, text="n (число точек)").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(panel, textvariable=self.n_var, width=12, justify="right", state="readonly").grid(
+            row=2, column=1, pady=3
+        )
+
+        ttk.Label(panel, text="R² (качество подгонки)").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(panel, textvariable=self.r2_var, width=12, justify="right", state="readonly").grid(
+            row=3, column=1, pady=3
+        )
+
+        ttk.Checkbutton(
+            panel, text="Задать a, b вручную", variable=self.manual_ab_var, command=self.on_toggle_manual_ab
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
+
+        ttk.Button(panel, text="Применить a, b", command=self.recompute).grid(
+            row=5, column=0, columnspan=2, pady=(2, 0), sticky="we"
+        )
+
+    def on_toggle_manual_ab(self) -> None:
+        state = "normal" if self.manual_ab_var.get() else "readonly"
+        self.a_entry.config(state=state)
+        self.b_entry.config(state=state)
+        self.recompute()
 
     def _update_cos_labels(self) -> None:
         self.cos_lab_var.set(f"{self.const.cos_theta_lab:.6f}")
@@ -240,6 +265,10 @@ class JFunctionApp:
         self.well_var.set(ALL)
         self.horizon_var.set(ALL)
 
+        self.manual_ab_var.set(False)
+        self.a_entry.config(state="readonly")
+        self.b_entry.config(state="readonly")
+
         self.recompute()
 
     def _filtered(self) -> pd.DataFrame | None:
@@ -260,11 +289,23 @@ class JFunctionApp:
                 var.set("-")
             return
 
-        try:
-            fit = fit_exponential(df["SWn"], df["J"])
-        except ValueError as exc:
-            self.result_label.config(text=str(exc))
-            fit = None
+        if self.manual_ab_var.get():
+            try:
+                a = float(self.a_var.get())
+                b = float(self.b_var.get())
+                if a <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Ошибка", "a и b должны быть числами, a > 0.")
+                fit = None
+            else:
+                fit = evaluate_fixed_params(a, b, df["SWn"], df["J"])
+        else:
+            try:
+                fit = fit_exponential(df["SWn"], df["J"])
+            except ValueError as exc:
+                self.result_label.config(text=str(exc))
+                fit = None
 
         if fit is not None:
             self.result_label.config(
@@ -273,10 +314,11 @@ class JFunctionApp:
                     f"(J(SWn) = a·exp(b·SWn), n={fit.n}, R²={fit.r2:.4f})"
                 )
             )
-            self.a_var.set(f"{fit.a:.4f}")
-            self.b_var.set(f"{fit.b:.4f}")
+            if not self.manual_ab_var.get():
+                self.a_var.set(f"{fit.a:.4f}")
+                self.b_var.set(f"{fit.b:.4f}")
             self.n_var.set(str(fit.n))
-            self.r2_var.set(f"{fit.r2:.4f}")
+            self.r2_var.set(f"{fit.r2:.4f}" if fit.r2 == fit.r2 else "-")  # NaN check
         else:
             for var in (self.a_var, self.b_var, self.n_var, self.r2_var):
                 var.set("-")

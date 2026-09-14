@@ -62,6 +62,30 @@ def fit_exponential(swn, j) -> FitResult:
     return FitResult(a=float(a), b=float(b), r2=float(r2), n=n)
 
 
+def evaluate_fixed_params(a: float, b: float, swn, j) -> FitResult:
+    """
+    Не подбирает a, b, а считает n и R² для заданных пользователем a, b
+    (чтобы можно было сравнить "ручной" тренд с фактическими данными).
+    """
+    x = np.asarray(swn, dtype=float)
+    j = np.asarray(j, dtype=float)
+
+    mask = np.isfinite(x) & np.isfinite(j) & (j > 0)
+    x = x[mask]
+    y = np.log(j[mask])
+    n = x.size
+
+    if n == 0 or a <= 0:
+        return FitResult(a=a, b=b, r2=float("nan"), n=n)
+
+    y_pred = np.log(a) + b * x
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    return FitResult(a=float(a), b=float(b), r2=float(r2), n=n)
+
+
 def fit_by_group(df: pd.DataFrame, group_col: str | None = None) -> pd.DataFrame:
     """
     Считает a, b, R², n для всей выборки ("Все образцы") и,
