@@ -42,7 +42,7 @@ class JFunctionApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Расчёт J-функции, SWn и коэффициентов a, b")
-        self.root.geometry("1050x720")
+        self.root.geometry("1300x820")
 
         self.raw_df: pd.DataFrame | None = None
         self.df: pd.DataFrame | None = None
@@ -147,16 +147,21 @@ class JFunctionApp:
         body = ttk.Frame(parent)
         body.pack(fill="both", expand=True, padx=8, pady=4)
 
-        self.rocktype_figure = Figure(figsize=(5, 4), dpi=100)
+        self.rocktype_figure = Figure(figsize=(4.3, 3.6), dpi=100)
         self.rocktype_ax = self.rocktype_figure.add_subplot(111)
         self.rocktype_canvas = FigureCanvasTkAgg(self.rocktype_figure, master=body)
         self.rocktype_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        self.rocktype_jswn_figure = Figure(figsize=(4.3, 3.6), dpi=100)
+        self.rocktype_jswn_ax = self.rocktype_jswn_figure.add_subplot(111)
+        self.rocktype_jswn_canvas = FigureCanvasTkAgg(self.rocktype_jswn_figure, master=body)
+        self.rocktype_jswn_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
 
         rt_columns = ("group", "n", "a", "b", "r2")
         self.rocktype_tree = ttk.Treeview(body, columns=rt_columns, show="headings", height=15)
         for col in rt_columns:
             self.rocktype_tree.heading(col, text=col)
-            self.rocktype_tree.column(col, width=90, anchor="center")
+            self.rocktype_tree.column(col, width=70, anchor="center")
         self.rocktype_tree.pack(side="left", fill="y", padx=(8, 0))
 
     def on_apply_rocktype(self) -> None:
@@ -180,6 +185,7 @@ class JFunctionApp:
         coeffs = fit_by_group(df, "rock_type")
         self._update_rocktype_table(coeffs)
         self._update_rocktype_plot(df, color_col="rock_type")
+        self._update_rocktype_jswn_plot(df, color_col="rock_type")
 
     def _update_rocktype_table(self, coeffs: pd.DataFrame) -> None:
         self.rocktype_tree.delete(*self.rocktype_tree.get_children())
@@ -210,6 +216,33 @@ class JFunctionApp:
         self.rocktype_ax.set_title("Кроссплот k-φ")
         self.rocktype_ax.grid(True, which="both", alpha=0.3)
         self.rocktype_canvas.draw()
+
+    def _update_rocktype_jswn_plot(self, df: pd.DataFrame, color_col: str | None = None) -> None:
+        """График J(Sw) от SWn с отдельным трендом для каждой группы (типа породы/горизонта)."""
+        self.rocktype_jswn_ax.clear()
+
+        if color_col is not None and color_col in df.columns:
+            groups = list(df.groupby(color_col, observed=True))
+        else:
+            groups = [("Все образцы", df)]
+
+        swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
+        for i, (name, sub) in enumerate(groups):
+            color = PINNED_COLORS[i % len(PINNED_COLORS)]
+            self.rocktype_jswn_ax.scatter(sub["SWn"], sub["J"], s=10, alpha=0.6, color=color, label=str(name))
+            try:
+                fit = fit_exponential(sub["SWn"], sub["J"])
+            except ValueError:
+                continue
+            self.rocktype_jswn_ax.plot(swn_grid, fit.predict(swn_grid), color=color, linewidth=2)
+
+        self.rocktype_jswn_ax.set_ylim(bottom=0)
+        self.rocktype_jswn_ax.set_xlabel("SWn")
+        self.rocktype_jswn_ax.set_ylabel("J(Sw)")
+        self.rocktype_jswn_ax.set_title("J(SWn) по группам")
+        self.rocktype_jswn_ax.legend(fontsize=7, loc="best")
+        self.rocktype_jswn_ax.grid(True, alpha=0.3)
+        self.rocktype_jswn_canvas.draw()
 
     def _build_constants_panel(self, parent: ttk.Widget) -> None:
         """Панель "Константы J-функции" - таблица, как в исходном Excel, с полями для правки."""
@@ -476,6 +509,7 @@ class JFunctionApp:
         self._update_table(df)
         color_col = "horizon" if "horizon" in df.columns else None
         self._update_rocktype_plot(df, color_col=color_col)
+        self._update_rocktype_jswn_plot(df, color_col=color_col)
         self.rocktype_tree.delete(*self.rocktype_tree.get_children())
 
     def _update_plot(self, df: pd.DataFrame, fit) -> None:
