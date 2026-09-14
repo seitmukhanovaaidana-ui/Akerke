@@ -304,42 +304,112 @@ class JFunctionApp:
         self.r2_var = tk.StringVar(value="-")
         self.manual_ab_var = tk.BooleanVar(value=False)
 
+        self.a_scale_var = tk.DoubleVar(value=0.01)
+        self.b_scale_var = tk.DoubleVar(value=0.0)
+
         bold = ("Segoe UI", 11, "bold")
         ttk.Label(panel, text="a").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
-        self.a_entry = ttk.Entry(panel, textvariable=self.a_var, width=12, justify="right",
+        self.a_entry = ttk.Entry(panel, textvariable=self.a_var, width=10, justify="right",
                                   state="readonly", font=bold)
         self.a_entry.grid(row=0, column=1, pady=3)
-        self.a_entry.bind("<Return>", lambda _e: self.recompute())
+        self.a_entry.bind("<Return>", lambda _e: self._on_manual_entry())
+        self.a_scale = tk.Scale(
+            panel, from_=0.01, to=200, resolution=0.01, orient="horizontal", length=170,
+            variable=self.a_scale_var, showvalue=False, state="disabled", command=self._on_a_scale,
+        )
+        self.a_scale.grid(row=0, column=2, padx=(6, 0))
 
         ttk.Label(panel, text="b").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
-        self.b_entry = ttk.Entry(panel, textvariable=self.b_var, width=12, justify="right",
+        self.b_entry = ttk.Entry(panel, textvariable=self.b_var, width=10, justify="right",
                                   state="readonly", font=bold)
         self.b_entry.grid(row=1, column=1, pady=3)
-        self.b_entry.bind("<Return>", lambda _e: self.recompute())
+        self.b_entry.bind("<Return>", lambda _e: self._on_manual_entry())
+        self.b_scale = tk.Scale(
+            panel, from_=-20, to=5, resolution=0.01, orient="horizontal", length=170,
+            variable=self.b_scale_var, showvalue=False, state="disabled", command=self._on_b_scale,
+        )
+        self.b_scale.grid(row=1, column=2, padx=(6, 0))
 
         ttk.Label(panel, text="n (число точек)").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Entry(panel, textvariable=self.n_var, width=12, justify="right", state="readonly").grid(
+        ttk.Entry(panel, textvariable=self.n_var, width=10, justify="right", state="readonly").grid(
             row=2, column=1, pady=3
         )
 
         ttk.Label(panel, text="R² (качество подгонки)").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Entry(panel, textvariable=self.r2_var, width=12, justify="right", state="readonly").grid(
-            row=3, column=1, pady=3
+        self.r2_entry = tk.Entry(
+            panel, textvariable=self.r2_var, width=10, justify="right", state="readonly",
+            relief="sunken", readonlybackground="white",
         )
+        self.r2_entry.grid(row=3, column=1, pady=3)
+        self.r2_hint = ttk.Label(panel, text="", foreground="gray")
+        self.r2_hint.grid(row=3, column=2, sticky="w", padx=(6, 0))
 
         ttk.Checkbutton(
-            panel, text="Задать a, b вручную", variable=self.manual_ab_var, command=self.on_toggle_manual_ab
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
+            panel, text="Задать a, b вручную (ползунками или числом)",
+            variable=self.manual_ab_var, command=self.on_toggle_manual_ab,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 2))
 
         ttk.Button(panel, text="Применить a, b", command=self.recompute).grid(
-            row=5, column=0, columnspan=2, pady=(2, 0), sticky="we"
+            row=5, column=0, columnspan=3, pady=(2, 0), sticky="we"
         )
 
     def on_toggle_manual_ab(self) -> None:
-        state = "normal" if self.manual_ab_var.get() else "readonly"
+        manual = self.manual_ab_var.get()
+        state = "normal" if manual else "readonly"
+        scale_state = "normal" if manual else "disabled"
+
+        if manual:
+            # Ставим ползунки туда, где сейчас находится a,b (из последнего автоподбора
+            # или предыдущей ручной правки), чтобы не начинать с края шкалы.
+            try:
+                self.a_scale_var.set(float(self.a_var.get()))
+            except ValueError:
+                pass
+            try:
+                self.b_scale_var.set(float(self.b_var.get()))
+            except ValueError:
+                pass
+
         self.a_entry.config(state=state)
         self.b_entry.config(state=state)
+        self.a_scale.config(state=scale_state)
+        self.b_scale.config(state=scale_state)
         self.recompute()
+
+    def _on_a_scale(self, value: str) -> None:
+        if not self.manual_ab_var.get():
+            return
+        self.a_var.set(f"{float(value):.4f}")
+        self.recompute()
+
+    def _on_b_scale(self, value: str) -> None:
+        if not self.manual_ab_var.get():
+            return
+        self.b_var.set(f"{float(value):.4f}")
+        self.recompute()
+
+    def _on_manual_entry(self) -> None:
+        """Пользователь ввёл a или b числом и нажал Enter - пересчитать и подвинуть ползунки."""
+        self.recompute()
+        try:
+            self.a_scale_var.set(float(self.a_var.get()))
+        except ValueError:
+            pass
+        try:
+            self.b_scale_var.set(float(self.b_var.get()))
+        except ValueError:
+            pass
+
+    def _update_r2_hint(self, r2: float | None) -> None:
+        if r2 is None or r2 != r2:  # NaN
+            self.r2_entry.config(fg="black")
+            self.r2_hint.config(text="")
+        elif 0 <= r2 <= 1:
+            self.r2_entry.config(fg="#1a7f37")
+            self.r2_hint.config(text="✓ в диапазоне 0-1", foreground="#1a7f37")
+        else:
+            self.r2_entry.config(fg="#c0392b")
+            self.r2_hint.config(text="✗ хуже среднего (< 0)", foreground="#c0392b")
 
     def _build_compare_panel(self, parent: ttk.Widget) -> None:
         """Панель "Сравнение трендов" - закреплённые варианты a,b поверх графика."""
@@ -457,6 +527,8 @@ class JFunctionApp:
         self.manual_ab_var.set(False)
         self.a_entry.config(state="readonly")
         self.b_entry.config(state="readonly")
+        self.a_scale.config(state="disabled")
+        self.b_scale.config(state="disabled")
 
         self.pinned_trends.clear()
         self.pinned_listbox.delete(0, "end")
@@ -479,6 +551,7 @@ class JFunctionApp:
             self.result_label.config(text="Нет данных для отображения.")
             for var in (self.a_var, self.b_var, self.n_var, self.r2_var):
                 var.set("-")
+            self._update_r2_hint(None)
             return
 
         if self.manual_ab_var.get():
@@ -511,9 +584,11 @@ class JFunctionApp:
                 self.b_var.set(f"{fit.b:.4f}")
             self.n_var.set(str(fit.n))
             self.r2_var.set(f"{fit.r2:.4f}" if fit.r2 == fit.r2 else "-")  # NaN check
+            self._update_r2_hint(fit.r2)
         else:
             for var in (self.a_var, self.b_var, self.n_var, self.r2_var):
                 var.set("-")
+            self._update_r2_hint(None)
 
         self._update_plot(df, fit)
         self._update_table(df)
