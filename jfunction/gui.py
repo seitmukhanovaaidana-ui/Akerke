@@ -29,6 +29,7 @@ from .report import save_results
 
 ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
+PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan", "black"]
 
 
 def _fmt_num(value: float) -> str:
@@ -45,6 +46,7 @@ class JFunctionApp:
         self.raw_df: pd.DataFrame | None = None
         self.df: pd.DataFrame | None = None
         self.const = JFunctionConstants()
+        self.pinned_trends: list[dict] = []
 
         self._build_widgets()
         self._update_cos_labels()
@@ -95,6 +97,8 @@ class JFunctionApp:
             pady=8,
         )
         self.result_label.pack(fill="x", padx=8, pady=6)
+
+        self._build_compare_panel(self.root)
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="both", expand=True, padx=8, pady=4)
@@ -211,6 +215,53 @@ class JFunctionApp:
         self.b_entry.config(state=state)
         self.recompute()
 
+    def _build_compare_panel(self, parent: ttk.Widget) -> None:
+        """Панель "Сравнение трендов" - закреплённые варианты a,b поверх графика."""
+        panel = ttk.LabelFrame(parent, text="Сравнение трендов на графике", padding=8)
+        panel.pack(fill="x", padx=8, pady=(0, 4))
+
+        btns = ttk.Frame(panel)
+        btns.pack(side="left", fill="y", padx=(0, 10))
+        ttk.Button(btns, text="Закрепить текущий тренд", command=self.on_pin_trend).pack(fill="x", pady=1)
+        ttk.Button(btns, text="Удалить выбранный", command=self.on_unpin_trend).pack(fill="x", pady=1)
+        ttk.Button(btns, text="Очистить всё", command=self.on_clear_pinned).pack(fill="x", pady=1)
+
+        self.pinned_listbox = tk.Listbox(panel, height=4)
+        self.pinned_listbox.pack(side="left", fill="both", expand=True)
+
+    def on_pin_trend(self) -> None:
+        try:
+            a = float(self.a_var.get())
+            b = float(self.b_var.get())
+        except ValueError:
+            messagebox.showwarning("Нет тренда", "Сначала загрузите данные, чтобы получить тренд.")
+            return
+
+        parts = [f"a={a:.4g}, b={b:.4g}"]
+        if self.well_var.get() != ALL:
+            parts.append(f"скв.{self.well_var.get()}")
+        if self.horizon_var.get() != ALL:
+            parts.append(self.horizon_var.get())
+        label = " | ".join(parts)
+
+        self.pinned_trends.append({"label": label, "a": a, "b": b})
+        self.pinned_listbox.insert("end", label)
+        self.recompute()
+
+    def on_unpin_trend(self) -> None:
+        sel = self.pinned_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self.pinned_listbox.delete(idx)
+        del self.pinned_trends[idx]
+        self.recompute()
+
+    def on_clear_pinned(self) -> None:
+        self.pinned_trends.clear()
+        self.pinned_listbox.delete(0, "end")
+        self.recompute()
+
     def _update_cos_labels(self) -> None:
         self.cos_lab_var.set(f"{self.const.cos_theta_lab:.6f}")
         self.cos_res_var.set(f"{self.const.cos_theta_res:.6f}")
@@ -280,6 +331,9 @@ class JFunctionApp:
         self.manual_ab_var.set(False)
         self.a_entry.config(state="readonly")
         self.b_entry.config(state="readonly")
+
+        self.pinned_trends.clear()
+        self.pinned_listbox.delete(0, "end")
 
         self.recompute()
 
@@ -353,8 +407,8 @@ class JFunctionApp:
             arrowprops=dict(arrowstyle="->"),
         )
         self.hover_annotation.set_visible(False)
+        swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
         if fit is not None:
-            swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
             self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2, label="тренд")
             self.ax.text(
                 0.4,
@@ -366,6 +420,12 @@ class JFunctionApp:
                 ha="center",
                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#ED7D31", edgecolor="none", alpha=0.95),
             )
+
+        for i, pinned in enumerate(self.pinned_trends):
+            color = PINNED_COLORS[i % len(PINNED_COLORS)]
+            curve = pinned["a"] * np.exp(pinned["b"] * swn_grid)
+            self.ax.plot(swn_grid, curve, color=color, linewidth=2, linestyle="--", label=pinned["label"])
+
         self.ax.set_ylim(bottom=0)
         self.ax.set_xlabel("SWn")
         self.ax.set_ylabel("J(Sw)")
