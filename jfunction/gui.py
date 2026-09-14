@@ -109,6 +109,12 @@ class JFunctionApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=chart_tab)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
+        self.scatter = None
+        self.hover_annotation = None
+        self._plot_swn = None
+        self._plot_j = None
+        self.canvas.mpl_connect("motion_notify_event", self._on_hover)
+
         self.tree = ttk.Treeview(table_tab, columns=TABLE_COLUMNS, show="headings")
         for col in TABLE_COLUMNS:
             self.tree.heading(col, text=col)
@@ -328,7 +334,19 @@ class JFunctionApp:
 
     def _update_plot(self, df: pd.DataFrame, fit) -> None:
         self.ax.clear()
-        self.ax.scatter(df["SWn"], df["J"], s=14, alpha=0.6, label="данные")
+        self._plot_swn = df["SWn"].to_numpy()
+        self._plot_j = df["J"].to_numpy()
+        self.scatter = self.ax.scatter(self._plot_swn, self._plot_j, s=14, alpha=0.6, label="данные")
+        self.hover_annotation = self.ax.annotate(
+            "",
+            xy=(0, 0),
+            xytext=(15, 15),
+            textcoords="offset points",
+            fontsize=9,
+            bbox=dict(boxstyle="round", fc="white", ec="gray"),
+            arrowprops=dict(arrowstyle="->"),
+        )
+        self.hover_annotation.set_visible(False)
         if fit is not None:
             swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
             self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2, label="тренд")
@@ -349,6 +367,25 @@ class JFunctionApp:
         self.ax.legend()
         self.ax.grid(True, alpha=0.3)
         self.canvas.draw()
+
+    def _on_hover(self, event) -> None:
+        if self.scatter is None or self.hover_annotation is None or event.inaxes != self.ax:
+            if self.hover_annotation is not None and self.hover_annotation.get_visible():
+                self.hover_annotation.set_visible(False)
+                self.canvas.draw_idle()
+            return
+
+        contained, info = self.scatter.contains(event)
+        if contained and len(info.get("ind", [])) > 0:
+            idx = info["ind"][0]
+            x, y = self._plot_swn[idx], self._plot_j[idx]
+            self.hover_annotation.xy = (x, y)
+            self.hover_annotation.set_text(f"SWn = {x:.4f}\nJ(Sw) = {y:.4f}")
+            self.hover_annotation.set_visible(True)
+            self.canvas.draw_idle()
+        elif self.hover_annotation.get_visible():
+            self.hover_annotation.set_visible(False)
+            self.canvas.draw_idle()
 
     def _update_table(self, df: pd.DataFrame) -> None:
         self.tree.delete(*self.tree.get_children())
