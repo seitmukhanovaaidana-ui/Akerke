@@ -67,12 +67,12 @@ def plot_j_function(
                 label=f"{name}: {fit}",
             )
 
-    ax.set_yscale("log")
+    ax.set_ylim(bottom=0)
     ax.set_xlabel("SWn (нормализованная водонасыщенность)")
     ax.set_ylabel("J(Sw)")
     ax.set_title("J-функция и экспоненциальный тренд J(SWn) = a·exp(b·SWn)")
     ax.legend(fontsize=8, loc="best")
-    ax.grid(True, which="both", alpha=0.3)
+    ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
