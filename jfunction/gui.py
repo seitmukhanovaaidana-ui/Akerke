@@ -177,7 +177,7 @@ class JFunctionApp:
     def on_load(self) -> None:
         path = filedialog.askopenfilename(
             title="Выберите файл с лабораторными данными",
-            filetypes=[("Таблицы", "*.csv *.xlsx *.xls"), ("Все файлы", "*.*")],
+            filetypes=[("Таблицы и Word-отчёты", "*.csv *.xlsx *.xls *.docx"), ("Все файлы", "*.*")],
         )
         if not path:
             return

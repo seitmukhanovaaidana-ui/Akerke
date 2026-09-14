@@ -30,13 +30,19 @@ def load_lab_data(path: str | Path) -> pd.DataFrame:
         Swir          - остаточная водонасыщенность образца, если её
                         не нужно определять автоматически.
 
-    Поддерживаются файлы .csv и .xlsx/.xls.
+    Поддерживаются файлы .csv, .xlsx/.xls, а также "сырые" лабораторные
+    отчёты в формате Word (.docx) - см. jfunction.docx_io.
     """
     path = Path(path)
-    if path.suffix.lower() == ".csv":
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
         df = pd.read_csv(path)
-    elif path.suffix.lower() in (".xlsx", ".xls"):
+    elif suffix in (".xlsx", ".xls"):
         df = pd.read_excel(path)
+    elif suffix == ".docx":
+        from .docx_io import load_lab_data_from_docx
+
+        df = load_lab_data_from_docx(path)
     else:
         raise ValueError(f"Неподдерживаемый формат файла: {path.suffix}")
 
