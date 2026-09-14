@@ -286,10 +286,10 @@ class JFunctionApp:
 
     def _update_plot(self, df: pd.DataFrame, fit) -> None:
         self.ax.clear()
-        self.ax.scatter(df["SWn"], df["J"], s=14, alpha=0.6, label="данные")
+        self.ax.scatter(df["SWn"], df["J"], s=14, alpha=0.6)
         if fit is not None:
             swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
-            self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2, label="тренд")
+            self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2)
             self.ax.text(
                 0.4,
                 0.7,
@@ -304,7 +304,6 @@ class JFunctionApp:
         self.ax.set_xlabel("SWn")
         self.ax.set_ylabel("J(Sw)")
         self.ax.set_title("J(SWn) = a·exp(b·SWn)")
-        self.ax.legend()
         self.ax.grid(True, alpha=0.3)
         self.canvas.draw()
 
