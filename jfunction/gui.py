@@ -23,14 +23,17 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
+from .corey import fit_corey_by_model, unified_corey_params
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
+from .ofp_docx_io import load_ofp_data_from_docx
 from .report import save_results
 from .rocktype import classify_by_permeability
 
 ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
 PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan", "black"]
+OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
 
 
 def _fmt_num(value: float) -> str:
@@ -42,12 +45,15 @@ class JFunctionApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Расчёт J-функции, SWn и коэффициентов a, b")
-        self.root.geometry("1300x820")
+        self.root.geometry("1450x820")
 
         self.raw_df: pd.DataFrame | None = None
         self.df: pd.DataFrame | None = None
         self.const = JFunctionConstants()
         self.pinned_trends: list[dict] = []
+
+        self.ofp_df: pd.DataFrame | None = None
+        self.ofp_per_model: pd.DataFrame | None = None
 
         self._build_widgets()
         self._update_cos_labels()
@@ -55,7 +61,16 @@ class JFunctionApp:
     # ------------------------------------------------------------------ UI
 
     def _build_widgets(self) -> None:
-        top = ttk.Frame(self.root, padding=8)
+        outer = ttk.Notebook(self.root)
+        outer.pack(fill="both", expand=True)
+        self.outer_notebook = outer
+
+        jfunc_tab = ttk.Frame(outer)
+        ofp_tab = ttk.Frame(outer)
+        outer.add(jfunc_tab, text="J-функция")
+        outer.add(ofp_tab, text="ОФП (Кори)")
+
+        top = ttk.Frame(jfunc_tab, padding=8)
         top.pack(fill="x")
 
         ttk.Button(top, text="Загрузить данные...", command=self.on_load).pack(side="left")
@@ -64,7 +79,7 @@ class JFunctionApp:
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export).pack(side="right")
         ttk.Button(top, text="Сохранить график...", command=self.on_save_chart).pack(side="right", padx=(0, 8))
 
-        middle = ttk.Frame(self.root)
+        middle = ttk.Frame(jfunc_tab)
         middle.pack(fill="x", padx=8, pady=4)
 
         filt = ttk.LabelFrame(middle, text="Фильтр", padding=8)
@@ -88,7 +103,7 @@ class JFunctionApp:
         self._build_result_panel(middle)
 
         self.result_label = tk.Label(
-            self.root,
+            jfunc_tab,
             text="Загрузите файл с лабораторными данными.",
             font=("Segoe UI", 13, "bold"),
             bg="#ED7D31",
@@ -99,9 +114,9 @@ class JFunctionApp:
         )
         self.result_label.pack(fill="x", padx=8, pady=6)
 
-        self._build_compare_panel(self.root)
+        self._build_compare_panel(jfunc_tab)
 
-        notebook = ttk.Notebook(self.root)
+        notebook = ttk.Notebook(jfunc_tab)
         notebook.pack(fill="both", expand=True, padx=8, pady=4)
         self.notebook = notebook
 
@@ -134,6 +149,68 @@ class JFunctionApp:
         vsb.pack(side="right", fill="y")
 
         self._build_rocktype_tab(rocktype_tab)
+        self._build_ofp_tab(ofp_tab)
+
+    def _build_ofp_tab(self, parent: ttk.Widget) -> None:
+        """Вкладка ОФП: загрузка Word-отчёта лаборатории и расчёт степеней Кори (nw, now)."""
+        top = ttk.Frame(parent, padding=8)
+        top.pack(fill="x")
+
+        ttk.Button(top, text="Загрузить ОФП-отчёт (.docx)...", command=self.on_load_ofp).pack(side="left")
+        self.ofp_file_label = ttk.Label(top, text="Файл не загружен")
+        self.ofp_file_label.pack(side="left", padx=10)
+        ttk.Button(top, text="Экспортировать результаты...", command=self.on_export_ofp).pack(side="right")
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.ofp_figure = Figure(figsize=(6, 5), dpi=100)
+        self.ofp_ax = self.ofp_figure.add_subplot(111)
+        self.ofp_canvas = FigureCanvasTkAgg(self.ofp_figure, master=body)
+        self.ofp_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        unified = ttk.LabelFrame(right, text="Единые параметры Кори (по керну)", padding=8)
+        unified.pack(fill="x")
+
+        self.ofp_nw_var = tk.StringVar(value="-")
+        self.ofp_now_var = tk.StringVar(value="-")
+        self.ofp_swir_var = tk.StringVar(value="-")
+        self.ofp_sor_var = tk.StringVar(value="-")
+        self.ofp_krwmax_var = tk.StringVar(value="-")
+        self.ofp_nmodels_var = tk.StringVar(value="-")
+
+        rows = [
+            ("nw (медиана)", self.ofp_nw_var),
+            ("now (медиана)", self.ofp_now_var),
+            ("Swir обр. (среднее)", self.ofp_swir_var),
+            ("Sor обр. (среднее)", self.ofp_sor_var),
+            ("krwmax обр. (среднее)", self.ofp_krwmax_var),
+            ("Число моделей/образцов", self.ofp_nmodels_var),
+        ]
+        for r, (label, var) in enumerate(rows):
+            ttk.Label(unified, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=1)
+            ttk.Entry(unified, textvariable=var, width=12, justify="right", state="readonly").grid(
+                row=r, column=1, pady=1
+            )
+
+        ofp_columns = OFP_COLUMNS
+        tree_frame = ttk.Frame(right)
+        tree_frame.pack(fill="both", expand=True, pady=(8, 0))
+        self.ofp_tree = ttk.Treeview(tree_frame, columns=ofp_columns, show="headings", height=14)
+        for col in ofp_columns:
+            self.ofp_tree.heading(col, text=col)
+            self.ofp_tree.column(col, width=60, anchor="center")
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.ofp_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.ofp_tree.xview)
+        self.ofp_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.ofp_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
 
     def _build_rocktype_tab(self, parent: ttk.Widget) -> None:
         """Кроссплот k-φ и разбиение образцов на типы породы по проницаемости."""
@@ -702,6 +779,120 @@ class JFunctionApp:
             points_path, coeffs_path = save_results(df, coeffs, out_dir)
             plot_path = Path(out_dir) / "j_function_plot.png"
             self.figure.savefig(plot_path, dpi=200, bbox_inches="tight")
+            messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}\n{plot_path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    # -------------------------------------------------------- ОФП (Кори)
+
+    def on_load_ofp(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Выберите Word-отчёт лаборатории по ОФП",
+            filetypes=[("Word-документ", "*.docx"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            df = load_ofp_data_from_docx(path)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка загрузки", str(exc))
+            return
+
+        if df.empty:
+            messagebox.showwarning("Нет данных", "Не удалось найти в файле данные ОФП (Sw/krw/krow).")
+            return
+
+        try:
+            per_model = fit_corey_by_model(df, group_col="model")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка расчёта", str(exc))
+            return
+
+        self.ofp_df = df
+        self.ofp_per_model = per_model
+        unified = unified_corey_params(per_model)
+
+        self.ofp_file_label.config(
+            text=f"{Path(path).name}  ({per_model['model'].nunique()} моделей, {len(df)} точек)"
+        )
+        self._update_ofp_table(per_model)
+        self._update_ofp_unified(unified)
+        self._update_ofp_plot(df, unified)
+
+    def _update_ofp_table(self, per_model: pd.DataFrame) -> None:
+        self.ofp_tree.delete(*self.ofp_tree.get_children())
+        for _, row in per_model.iterrows():
+            values = []
+            for col in OFP_COLUMNS:
+                v = row.get(col, "")
+                if isinstance(v, float):
+                    values.append("-" if v != v else f"{v:.4f}")
+                else:
+                    values.append(v)
+            self.ofp_tree.insert("", "end", values=values)
+
+    def _update_ofp_unified(self, unified) -> None:
+        if unified is None:
+            for var in (
+                self.ofp_nw_var, self.ofp_now_var, self.ofp_swir_var,
+                self.ofp_sor_var, self.ofp_krwmax_var, self.ofp_nmodels_var,
+            ):
+                var.set("-")
+            return
+        self.ofp_nw_var.set(f"{unified.nw:.4f}")
+        self.ofp_now_var.set(f"{unified.now:.4f}")
+        self.ofp_swir_var.set(f"{unified.swir:.4f}")
+        self.ofp_sor_var.set(f"{unified.sor:.4f}")
+        self.ofp_krwmax_var.set(f"{unified.krwmax:.4f}")
+        self.ofp_nmodels_var.set(str(unified.n_models))
+
+    def _update_ofp_plot(self, df: pd.DataFrame, unified) -> None:
+        self.ofp_ax.clear()
+        if df is not None and not df.empty:
+            wells = sorted(df["well"].dropna().astype(str).unique())
+            well_colors = {w: PINNED_COLORS[i % len(PINNED_COLORS)] for i, w in enumerate(wells)}
+            for well, sub in df.groupby("well"):
+                color = well_colors.get(str(well), "gray")
+                self.ofp_ax.scatter(sub["Sw"], sub["krw"], s=14, alpha=0.6, color=color, marker="o")
+                self.ofp_ax.scatter(sub["Sw"], sub["krow"], s=14, alpha=0.6, color=color, marker="^")
+
+            self.ofp_ax.scatter([], [], color="gray", marker="o", label="krw (точки)")
+            self.ofp_ax.scatter([], [], color="gray", marker="^", label="krow (точки)")
+
+        if unified is not None:
+            sw_grid = np.linspace(unified.swir, 1.0, 100)
+            sw_star = np.clip((sw_grid - unified.swir) / (1.0 - unified.swir), 0, 1)
+            krw_curve = unified.krwmax * np.power(sw_star, unified.nw)
+            kro_curve = unified.krow_swc * np.power(1 - sw_star, unified.now)
+            self.ofp_ax.plot(sw_grid, krw_curve, color="blue", linewidth=2, linestyle="--", label="krw (единая)")
+            self.ofp_ax.plot(sw_grid, kro_curve, color="black", linewidth=2, linestyle="--", label="kro (единая)")
+
+        self.ofp_ax.set_xlabel("Sw")
+        self.ofp_ax.set_ylabel("Относительная проницаемость")
+        self.ofp_ax.set_title("ОФП: krw/krow(Sw) и единая кривая Кори")
+        self.ofp_ax.set_ylim(bottom=0)
+        self.ofp_ax.legend(fontsize=8)
+        self.ofp_ax.grid(True, alpha=0.3)
+        self.ofp_canvas.draw()
+
+    def on_export_ofp(self) -> None:
+        if self.ofp_per_model is None or self.ofp_per_model.empty:
+            messagebox.showwarning("Нет данных", "Сначала загрузите ОФП-отчёт.")
+            return
+
+        out_dir = filedialog.askdirectory(title="Выберите папку для сохранения результатов ОФП")
+        if not out_dir:
+            return
+
+        try:
+            out_dir_path = Path(out_dir)
+            points_path = out_dir_path / "ofp_points.xlsx"
+            coeffs_path = out_dir_path / "ofp_corey_coefficients.xlsx"
+            plot_path = out_dir_path / "ofp_corey_plot.png"
+
+            self.ofp_df.to_excel(points_path, index=False)
+            self.ofp_per_model.to_excel(coeffs_path, index=False)
+            self.ofp_figure.savefig(plot_path, dpi=200, bbox_inches="tight")
             messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}\n{plot_path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
