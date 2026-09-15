@@ -98,6 +98,24 @@ def fit_corey_model(df: pd.DataFrame) -> CoreyFitResult:
     return CoreyFitResult(nw=nw, now=now, r2_w=r2_w, r2_o=r2_o, n=len(df))
 
 
+def evaluate_fixed_corey(nw: float, now: float, df: pd.DataFrame) -> CoreyFitResult:
+    """
+    Не подбирает nw, now, а считает R²w/R²o по ВСЕМ точкам выборки для
+    введённых пользователем nw, now (чтобы можно было покрутить степени
+    Кори вручную и сразу увидеть, насколько хуже/лучше они ложатся на
+    фактические данные, чем автоматически подобранная медиана).
+    """
+    df = add_corey_derived_columns(df)
+    ln_sw = df["ln_Sw_star"].to_numpy()
+    ln_krw = df["ln_Krw_star"].to_numpy()
+    ln_1msw = df["ln_1m_Sw_star"].to_numpy()
+    ln_kro = df["ln_Kro_star"].to_numpy()
+
+    r2_w = _r2_through_origin(ln_krw, nw * ln_sw, ln_sw)
+    r2_o = _r2_through_origin(ln_kro, now * ln_1msw, ln_1msw)
+    return CoreyFitResult(nw=nw, now=now, r2_w=r2_w, r2_o=r2_o, n=len(df))
+
+
 def fit_corey_by_model(df: pd.DataFrame, group_col: str = "model") -> pd.DataFrame:
     """
     Считает nw, now, R²w, R²o, n для каждой модели/образца (group_col) отдельно,

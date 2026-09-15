@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
-from .corey import fit_corey_by_model, unified_corey_params
+from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_params
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
@@ -54,6 +54,7 @@ class JFunctionApp:
 
         self.ofp_df: pd.DataFrame | None = None
         self.ofp_per_model: pd.DataFrame | None = None
+        self.ofp_unified = None
 
         self._build_widgets()
         self._update_cos_labels()
@@ -181,20 +182,56 @@ class JFunctionApp:
         self.ofp_sor_var = tk.StringVar(value="-")
         self.ofp_krwmax_var = tk.StringVar(value="-")
         self.ofp_nmodels_var = tk.StringVar(value="-")
+        self.ofp_r2w_var = tk.StringVar(value="-")
+        self.ofp_r2o_var = tk.StringVar(value="-")
+        self.ofp_manual_var = tk.BooleanVar(value=False)
+        self.ofp_nw_scale_var = tk.DoubleVar(value=2.0)
+        self.ofp_now_scale_var = tk.DoubleVar(value=1.5)
 
-        rows = [
-            ("nw (медиана)", self.ofp_nw_var),
-            ("now (медиана)", self.ofp_now_var),
+        bold = ("Segoe UI", 10, "bold")
+
+        ttk.Label(unified, text="nw").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=2)
+        self.ofp_nw_entry = ttk.Entry(
+            unified, textvariable=self.ofp_nw_var, width=10, justify="right", state="readonly", font=bold
+        )
+        self.ofp_nw_entry.grid(row=0, column=1, pady=2)
+        self.ofp_nw_entry.bind("<Return>", lambda _e: self._on_ofp_manual_entry())
+        self.ofp_nw_scale = tk.Scale(
+            unified, from_=0.1, to=6.0, resolution=0.01, orient="horizontal", length=150,
+            variable=self.ofp_nw_scale_var, showvalue=False, state="disabled", command=self._on_ofp_nw_scale,
+        )
+        self.ofp_nw_scale.grid(row=0, column=2, padx=(6, 0))
+
+        ttk.Label(unified, text="now").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+        self.ofp_now_entry = ttk.Entry(
+            unified, textvariable=self.ofp_now_var, width=10, justify="right", state="readonly", font=bold
+        )
+        self.ofp_now_entry.grid(row=1, column=1, pady=2)
+        self.ofp_now_entry.bind("<Return>", lambda _e: self._on_ofp_manual_entry())
+        self.ofp_now_scale = tk.Scale(
+            unified, from_=0.1, to=6.0, resolution=0.01, orient="horizontal", length=150,
+            variable=self.ofp_now_scale_var, showvalue=False, state="disabled", command=self._on_ofp_now_scale,
+        )
+        self.ofp_now_scale.grid(row=1, column=2, padx=(6, 0))
+
+        readonly_rows = [
             ("Swir обр. (среднее)", self.ofp_swir_var),
             ("Sor обр. (среднее)", self.ofp_sor_var),
             ("krwmax обр. (среднее)", self.ofp_krwmax_var),
+            ("R²_w (по всем точкам)", self.ofp_r2w_var),
+            ("R²_o (по всем точкам)", self.ofp_r2o_var),
             ("Число моделей/образцов", self.ofp_nmodels_var),
         ]
-        for r, (label, var) in enumerate(rows):
-            ttk.Label(unified, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=1)
-            ttk.Entry(unified, textvariable=var, width=12, justify="right", state="readonly").grid(
-                row=r, column=1, pady=1
+        for i, (label, var) in enumerate(readonly_rows, start=2):
+            ttk.Label(unified, text=label).grid(row=i, column=0, sticky="w", padx=(0, 8), pady=2)
+            ttk.Entry(unified, textvariable=var, width=10, justify="right", state="readonly").grid(
+                row=i, column=1, pady=2
             )
+
+        ttk.Checkbutton(
+            unified, text="Задать nw, now вручную (ползунками или числом)",
+            variable=self.ofp_manual_var, command=self.on_toggle_ofp_manual,
+        ).grid(row=len(readonly_rows) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         ofp_columns = OFP_COLUMNS
         tree_frame = ttk.Frame(right)
@@ -810,14 +847,93 @@ class JFunctionApp:
 
         self.ofp_df = df
         self.ofp_per_model = per_model
-        unified = unified_corey_params(per_model)
+        self.ofp_unified = unified_corey_params(per_model)
 
         self.ofp_file_label.config(
             text=f"{Path(path).name}  ({per_model['model'].nunique()} моделей, {len(df)} точек)"
         )
         self._update_ofp_table(per_model)
-        self._update_ofp_unified(unified)
-        self._update_ofp_plot(df, unified)
+
+        self.ofp_manual_var.set(False)
+        self.ofp_nw_entry.config(state="readonly")
+        self.ofp_now_entry.config(state="readonly")
+        self.ofp_nw_scale.config(state="disabled")
+        self.ofp_now_scale.config(state="disabled")
+
+        self._update_ofp_unified(self.ofp_unified)
+        self._recompute_ofp_fit()
+
+    def on_toggle_ofp_manual(self) -> None:
+        manual = self.ofp_manual_var.get()
+        state = "normal" if manual else "readonly"
+        scale_state = "normal" if manual else "disabled"
+
+        if manual:
+            try:
+                self.ofp_nw_scale_var.set(float(self.ofp_nw_var.get()))
+            except ValueError:
+                pass
+            try:
+                self.ofp_now_scale_var.set(float(self.ofp_now_var.get()))
+            except ValueError:
+                pass
+
+        self.ofp_nw_entry.config(state=state)
+        self.ofp_now_entry.config(state=state)
+        self.ofp_nw_scale.config(state=scale_state)
+        self.ofp_now_scale.config(state=scale_state)
+
+        if not manual and self.ofp_unified is not None:
+            # вернуться к автоматической медиане при снятии галочки
+            self.ofp_nw_var.set(f"{self.ofp_unified.nw:.4f}")
+            self.ofp_now_var.set(f"{self.ofp_unified.now:.4f}")
+            self.ofp_nw_scale_var.set(self.ofp_unified.nw)
+            self.ofp_now_scale_var.set(self.ofp_unified.now)
+
+        self._recompute_ofp_fit()
+
+    def _on_ofp_nw_scale(self, value: str) -> None:
+        if not self.ofp_manual_var.get():
+            return
+        self.ofp_nw_var.set(f"{float(value):.4f}")
+        self._recompute_ofp_fit()
+
+    def _on_ofp_now_scale(self, value: str) -> None:
+        if not self.ofp_manual_var.get():
+            return
+        self.ofp_now_var.set(f"{float(value):.4f}")
+        self._recompute_ofp_fit()
+
+    def _on_ofp_manual_entry(self) -> None:
+        """Пользователь ввёл nw или now числом и нажал Enter - пересчитать и подвинуть ползунки."""
+        self._recompute_ofp_fit()
+        try:
+            self.ofp_nw_scale_var.set(float(self.ofp_nw_var.get()))
+        except ValueError:
+            pass
+        try:
+            self.ofp_now_scale_var.set(float(self.ofp_now_var.get()))
+        except ValueError:
+            pass
+
+    def _recompute_ofp_fit(self) -> None:
+        """Считает R²w/R²o по текущим nw, now (автоматическим или введённым вручную) и обновляет график."""
+        if self.ofp_df is None or self.ofp_unified is None:
+            return
+        try:
+            nw = float(self.ofp_nw_var.get())
+            now = float(self.ofp_now_var.get())
+            if nw <= 0 or now <= 0:
+                raise ValueError
+        except ValueError:
+            self.ofp_r2w_var.set("-")
+            self.ofp_r2o_var.set("-")
+            return
+
+        fit = evaluate_fixed_corey(nw, now, self.ofp_df)
+        self.ofp_r2w_var.set(f"{fit.r2_w:.4f}" if fit.r2_w == fit.r2_w else "-")
+        self.ofp_r2o_var.set(f"{fit.r2_o:.4f}" if fit.r2_o == fit.r2_o else "-")
+        self._update_ofp_plot(self.ofp_df, self.ofp_unified, nw=nw, now=now)
 
     def _update_ofp_table(self, per_model: pd.DataFrame) -> None:
         self.ofp_tree.delete(*self.ofp_tree.get_children())
@@ -834,8 +950,8 @@ class JFunctionApp:
     def _update_ofp_unified(self, unified) -> None:
         if unified is None:
             for var in (
-                self.ofp_nw_var, self.ofp_now_var, self.ofp_swir_var,
-                self.ofp_sor_var, self.ofp_krwmax_var, self.ofp_nmodels_var,
+                self.ofp_nw_var, self.ofp_now_var, self.ofp_swir_var, self.ofp_sor_var,
+                self.ofp_krwmax_var, self.ofp_nmodels_var, self.ofp_r2w_var, self.ofp_r2o_var,
             ):
                 var.set("-")
             return
@@ -845,8 +961,10 @@ class JFunctionApp:
         self.ofp_sor_var.set(f"{unified.sor:.4f}")
         self.ofp_krwmax_var.set(f"{unified.krwmax:.4f}")
         self.ofp_nmodels_var.set(str(unified.n_models))
+        self.ofp_nw_scale_var.set(unified.nw)
+        self.ofp_now_scale_var.set(unified.now)
 
-    def _update_ofp_plot(self, df: pd.DataFrame, unified) -> None:
+    def _update_ofp_plot(self, df: pd.DataFrame, unified, nw: float | None = None, now: float | None = None) -> None:
         self.ofp_ax.clear()
         if df is not None and not df.empty:
             wells = sorted(df["well"].dropna().astype(str).unique())
@@ -860,13 +978,15 @@ class JFunctionApp:
             self.ofp_ax.scatter([], [], color="gray", marker="^", label="krow (точки)")
 
         if unified is not None:
+            nw_val = unified.nw if nw is None else nw
+            now_val = unified.now if now is None else now
             # Swmax (верхняя граница Sw в опыте) = 1 - Sor - так же, как в исходном
             # Excel (формула Sw* = (Sw-Swir)/((1-Sor)-Swir)), а не Sw=1.
             swmax_eff = 1.0 - unified.sor
             sw_grid = np.linspace(unified.swir, swmax_eff, 100)
             sw_star = np.clip((sw_grid - unified.swir) / (swmax_eff - unified.swir), 0, 1)
-            krw_curve = unified.krwmax * np.power(sw_star, unified.nw)
-            kro_curve = unified.krow_swc * np.power(1 - sw_star, unified.now)
+            krw_curve = unified.krwmax * np.power(sw_star, nw_val)
+            kro_curve = unified.krow_swc * np.power(1 - sw_star, now_val)
             self.ofp_ax.plot(sw_grid, krw_curve, color="blue", linewidth=2, linestyle="--", label="krw (единая)")
             self.ofp_ax.plot(sw_grid, kro_curve, color="black", linewidth=2, linestyle="--", label="kro (единая)")
 
