@@ -860,8 +860,11 @@ class JFunctionApp:
             self.ofp_ax.scatter([], [], color="gray", marker="^", label="krow (точки)")
 
         if unified is not None:
-            sw_grid = np.linspace(unified.swir, 1.0, 100)
-            sw_star = np.clip((sw_grid - unified.swir) / (1.0 - unified.swir), 0, 1)
+            # Swmax (верхняя граница Sw в опыте) = 1 - Sor - так же, как в исходном
+            # Excel (формула Sw* = (Sw-Swir)/((1-Sor)-Swir)), а не Sw=1.
+            swmax_eff = 1.0 - unified.sor
+            sw_grid = np.linspace(unified.swir, swmax_eff, 100)
+            sw_star = np.clip((sw_grid - unified.swir) / (swmax_eff - unified.swir), 0, 1)
             krw_curve = unified.krwmax * np.power(sw_star, unified.nw)
             kro_curve = unified.krow_swc * np.power(1 - sw_star, unified.now)
             self.ofp_ax.plot(sw_grid, krw_curve, color="blue", linewidth=2, linestyle="--", label="krw (единая)")
