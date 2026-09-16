@@ -61,6 +61,10 @@ def _parse_meta_table(table) -> dict:
             m = re.search(r"\d+", value)
             if m:
                 field_well = m.group()
+        elif "образц" in label_l and "количество" not in label_l:
+            # "№ образца (ов)": "011104016K01H; 011104016K02H" (иногда через перевод строки)
+            samples = re.split(r"[;\n]+", value)
+            meta["samples"] = [s.strip().lstrip("№").strip() for s in samples if s.strip()]
         elif "месторожден" in label_l and re.fullmatch(r"\d+", value.strip()):
             # опечатка в отчёте: номер скважины иногда попадает в поле "Месторождение"
             field_well = field_well or value.strip()
@@ -77,6 +81,17 @@ def _parse_meta_table(table) -> dict:
     if well is not None:
         meta["well"] = well
     return meta
+
+
+def _extract_samples_from_paragraph(text: str) -> list[str] | None:
+    """Достаёт номера образцов из заголовка вида "...(011103058J02H; 011103058J03H)"."""
+    matches = re.findall(r"\(([^()]*)\)", text)
+    if not matches:
+        return None
+    inner = matches[-1]
+    parts = re.split(r"[;\n]+", inner)
+    samples = [p.strip().lstrip("№").strip() for p in parts if p.strip()]
+    return samples or None
 
 
 def _find_curve_columns(header: list[str]) -> tuple[int, int, int] | None:
@@ -127,11 +142,14 @@ def _process_data_table(table, meta: dict, model_counts: dict, rows: list[dict])
     krwmax = pts[-1][1]
     krow_swc = pts[0][2]
 
+    samples = ", ".join(meta.get("samples", []))
+
     for sw, krw, krow in pts:
         rows.append(
             {
                 "model": model_id,
                 "well": well,
+                "samples": samples,
                 "Sw": sw,
                 "krw": krw,
                 "krow": krow,
@@ -147,16 +165,38 @@ def _process_data_table(table, meta: dict, model_counts: dict, rows: list[dict])
 
 
 def load_ofp_data_from_docx(path: str | Path) -> pd.DataFrame:
-    """Извлекает точки кривых ОФП (Sw, krw, krow + Swir/Sor/Swmax/krwmax/krow_swc) из .docx-отчёта."""
+    """Извлекает точки кривых ОФП (Sw, krw, krow + Swir/Sor/Swmax/krwmax/krow_swc) из .docx-отчёта.
+
+    Дополнительно к таблицам обходит документ в порядке следования абзацев,
+    чтобы взять номера образцов из заголовков вида "Данные проведённого
+    эксперимента ... (011103058J02H; 011103058J03H)" - в части отчётов эти
+    номера есть только в заголовке абзаца, а не в самой метаданные-таблице.
+    """
     import docx  # локальный импорт: нужен только для .docx
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     doc = docx.Document(str(path))
 
     rows: list[dict] = []
     model_counts: dict = {}
     pending_meta: dict | None = None
+    last_paragraph_samples: list[str] | None = None
 
-    for table in doc.tables:
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.split("}")[-1]
+
+        if tag == "p":
+            text = Paragraph(child, doc).text.strip()
+            samples = _extract_samples_from_paragraph(text)
+            if samples:
+                last_paragraph_samples = samples
+            continue
+
+        if tag != "tbl":
+            continue
+
+        table = Table(child, doc)
         if not table.rows:
             continue
         header = [c.text.strip() for c in table.rows[0].cells]
@@ -166,6 +206,9 @@ def load_ofp_data_from_docx(path: str | Path) -> pd.DataFrame:
             continue
 
         if pending_meta is not None and _find_curve_columns(header) is not None:
-            _process_data_table(table, pending_meta, model_counts, rows)
+            local_meta = dict(pending_meta)
+            if last_paragraph_samples:
+                local_meta["samples"] = last_paragraph_samples
+            _process_data_table(table, local_meta, model_counts, rows)
 
     return pd.DataFrame(rows)
