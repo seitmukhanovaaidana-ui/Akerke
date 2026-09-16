@@ -24,6 +24,7 @@ from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
 from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_params
+from .endpoint_cubes import apply_correlation, fit_endpoint_cubes, load_endpoint_summary_xlsx
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
@@ -39,6 +40,7 @@ PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan",
 OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
 CROSSCHECK_COLUMNS = ("well", "sample", "model_OFP", "Swir_Pc", "Swir_OFP", "diff", "perm_mD", "porosity_pct")
 PETRO_COLUMNS = ("horizon", "n", "a", "b", "r2", "poro_min", "poro_max", "perm_min", "perm_max")
+CUBES_COLUMNS = ("horizon", "endpoint", "x_var", "form", "a", "b", "r2", "n")
 
 
 def _fmt_num(value: float) -> str:
@@ -66,6 +68,12 @@ class JFunctionApp:
         self.petro_df: pd.DataFrame | None = None
         self.petro_fits: pd.DataFrame | None = None
 
+        self.cubes_df: pd.DataFrame | None = None
+        self.cubes_fits: list = []
+        self.cubes_selected: int | None = None
+        self._cubes_last_input: list | None = None
+        self._cubes_last_result = None
+
         self._build_widgets()
         self._update_cos_labels()
 
@@ -80,10 +88,12 @@ class JFunctionApp:
         ofp_tab = ttk.Frame(outer)
         crosscheck_tab = ttk.Frame(outer)
         petro_tab = ttk.Frame(outer)
+        cubes_tab = ttk.Frame(outer)
         outer.add(jfunc_tab, text="J-функция")
         outer.add(ofp_tab, text="ОФП (Кори)")
         outer.add(crosscheck_tab, text="Сверка Swir")
         outer.add(petro_tab, text="Петрофизика по горизонтам")
+        outer.add(cubes_tab, text="Кубы концевых точек")
 
         top = ttk.Frame(jfunc_tab, padding=8)
         top.pack(fill="x")
@@ -167,6 +177,7 @@ class JFunctionApp:
         self._build_ofp_tab(ofp_tab)
         self._build_crosscheck_tab(crosscheck_tab)
         self._build_petro_tab(petro_tab)
+        self._build_cubes_tab(cubes_tab)
 
     def _build_petro_tab(self, parent: ttk.Widget) -> None:
         """Петрофизика керна по горизонтам: k = a*exp(b*Кп) отдельно на каждый горизонт."""
@@ -221,6 +232,76 @@ class JFunctionApp:
         self.petro_tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+
+    def _build_cubes_tab(self, parent: ttk.Widget) -> None:
+        """Кубы концевых точек: корреляция Swir/Sor/krwmax от Кп/k по горизонтам + применение к массиву."""
+        top = ttk.Frame(parent, padding=8)
+        top.pack(fill="x")
+
+        ttk.Button(
+            top, text="Загрузить сводную таблицу ОФП (.xlsx)...", command=self.on_load_cubes
+        ).pack(side="left")
+        self.cubes_file_label = ttk.Label(top, text="Файл не загружен")
+        self.cubes_file_label.pack(side="left", padx=10)
+
+        ttk.Label(top, text="Мин. образцов на горизонт:").pack(side="left", padx=(20, 4))
+        self.cubes_min_samples_var = tk.StringVar(value="4")
+        ttk.Entry(top, textvariable=self.cubes_min_samples_var, width=5).pack(side="left")
+        ttk.Button(top, text="Построить", command=self.on_run_cubes).pack(side="left", padx=(8, 0))
+
+        ttk.Button(top, text="Экспортировать таблицу...", command=self.on_export_cubes).pack(side="right")
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.cubes_figure = Figure(figsize=(5.5, 5), dpi=100)
+        self.cubes_ax = self.cubes_figure.add_subplot(111)
+        self.cubes_canvas = FigureCanvasTkAgg(self.cubes_figure, master=body)
+        self.cubes_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        ttk.Label(
+            right,
+            text="Выберите строку в таблице - график слева покажет именно\n"
+                 "эту зависимость. Формы (linear/log/power/exp) перебираются\n"
+                 "автоматически, выбирается лучшая по R².",
+            justify="left", wraplength=320,
+        ).pack(anchor="w", pady=(0, 6))
+
+        tree_frame = ttk.Frame(right)
+        tree_frame.pack(fill="both", expand=True)
+        self.cubes_tree = ttk.Treeview(tree_frame, columns=CUBES_COLUMNS, show="headings", height=12)
+        for col in CUBES_COLUMNS:
+            self.cubes_tree.heading(col, text=col)
+            self.cubes_tree.column(col, width=75, anchor="center")
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.cubes_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.cubes_tree.xview)
+        self.cubes_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.cubes_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        self.cubes_tree.bind("<<TreeviewSelect>>", self._on_cubes_select)
+
+        apply_frame = ttk.LabelFrame(right, text="Применить к массиву значений (построить «куб»)", padding=8)
+        apply_frame.pack(fill="x", pady=(8, 0))
+
+        ttk.Label(apply_frame, text="Значения Кп/k через запятую:").pack(anchor="w")
+        self.cubes_input_var = tk.StringVar(value="")
+        ttk.Entry(apply_frame, textvariable=self.cubes_input_var, width=40).pack(fill="x", pady=(2, 4))
+        btn_row = ttk.Frame(apply_frame)
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text="Применить", command=self.on_apply_cube).pack(side="left")
+        ttk.Button(
+            btn_row, text="Сохранить результат в CSV...", command=self.on_save_cube_result
+        ).pack(side="left", padx=(8, 0))
+        self.cubes_output_var = tk.StringVar(value="")
+        ttk.Label(apply_frame, textvariable=self.cubes_output_var, wraplength=320, foreground="#1a7f37").pack(
+            anchor="w", pady=(4, 0)
+        )
 
     def _build_crosscheck_tab(self, parent: ttk.Widget) -> None:
         """Сверка Swir: капилляриметрия (J-функция) vs ОФП по общим образцам керна."""
@@ -1403,6 +1484,163 @@ class JFunctionApp:
             return
         try:
             self.petro_fits.to_excel(path, index=False)
+            messagebox.showinfo("Готово", f"Сохранено:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    # -------------------------------------------------------- Кубы концевых точек
+
+    def on_load_cubes(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Выберите файл со сводной таблицей ОФП (лист «ОФП», Таблица 2.4.2)",
+            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            df = load_endpoint_summary_xlsx(path)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка загрузки", str(exc))
+            return
+
+        if df.empty:
+            messagebox.showwarning("Нет данных", "Не удалось найти данные на листе «ОФП».")
+            return
+
+        self.cubes_df = df
+        self.cubes_file_label.config(
+            text=f"{Path(path).name}  ({len(df)} образцов, {df['horizon'].nunique()} горизонтов)"
+        )
+        self.on_run_cubes()
+
+    def on_run_cubes(self) -> None:
+        if self.cubes_df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите сводную таблицу ОФП.")
+            return
+        try:
+            min_samples = int(self.cubes_min_samples_var.get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "«Мин. образцов на горизонт» должно быть целым числом.")
+            return
+
+        self.cubes_fits = fit_endpoint_cubes(self.cubes_df, min_samples=min_samples)
+        self._update_cubes_table()
+        self.cubes_selected = None
+        self._cubes_last_input = None
+        self._cubes_last_result = None
+        self.cubes_output_var.set("")
+        self.cubes_ax.clear()
+        self.cubes_canvas.draw()
+
+        if not self.cubes_fits:
+            messagebox.showwarning(
+                "Нет корреляций",
+                "Ни для одного горизонта не набралось достаточно образцов "
+                "(или не хватает данных Кп/k/концевых точек). Попробуйте "
+                "уменьшить «Мин. образцов на горизонт».",
+            )
+
+    def _update_cubes_table(self) -> None:
+        self.cubes_tree.delete(*self.cubes_tree.get_children())
+        for corr in self.cubes_fits:
+            self.cubes_tree.insert(
+                "", "end",
+                values=(
+                    corr.horizon, corr.endpoint, corr.x_var, corr.form,
+                    f"{corr.a:.4g}", f"{corr.b:.4g}", f"{corr.r2:.3f}", corr.n,
+                ),
+            )
+
+    def _on_cubes_select(self, _event=None) -> None:
+        sel = self.cubes_tree.selection()
+        if not sel:
+            return
+        idx = self.cubes_tree.index(sel[0])
+        self.cubes_selected = idx
+        self._update_cubes_plot(self.cubes_fits[idx])
+
+    def _update_cubes_plot(self, corr) -> None:
+        self.cubes_ax.clear()
+        sub = self.cubes_df[self.cubes_df["horizon"] == corr.horizon].dropna(subset=[corr.x_var, corr.endpoint])
+        self.cubes_ax.scatter(sub[corr.x_var], sub[corr.endpoint], s=40, color="steelblue", edgecolor="black")
+
+        xx = np.linspace(corr.x_min, corr.x_max, 100)
+        yy = corr.predict(xx)
+        self.cubes_ax.plot(xx, yy, color="red", linewidth=2)
+
+        x_label = "Пористость, %" if corr.x_var == "porosity_pct" else "Проницаемость, мД"
+        self.cubes_ax.set_xlabel(x_label)
+        self.cubes_ax.set_ylabel(corr.endpoint)
+        self.cubes_ax.set_title(f"{corr.horizon}: {corr.endpoint} = f(x), {corr.form}, R²={corr.r2:.3f}")
+        if corr.x_var == "perm_mD":
+            self.cubes_ax.set_xscale("log")
+        self.cubes_ax.grid(True, alpha=0.3)
+        self.cubes_canvas.draw()
+
+    def on_apply_cube(self) -> None:
+        if self.cubes_selected is None:
+            messagebox.showwarning("Не выбрано", "Сначала выберите строку в таблице зависимостей.")
+            return
+        text = self.cubes_input_var.get().strip()
+        if not text:
+            messagebox.showwarning("Нет значений", "Введите значения Кп/k через запятую.")
+            return
+        try:
+            values = [float(v.strip().replace(",", ".")) for v in text.split(",") if v.strip()]
+        except ValueError:
+            messagebox.showerror("Ошибка", "Все значения должны быть числами через запятую.")
+            return
+
+        corr = self.cubes_fits[self.cubes_selected]
+        result = apply_correlation(corr, values)
+        self._cubes_last_input = values
+        self._cubes_last_result = result
+        pairs = ", ".join(f"{x:g}→{y:.4f}" for x, y in zip(values, result))
+        self.cubes_output_var.set(f"{corr.endpoint} по {corr.horizon}: {pairs}")
+
+    def on_save_cube_result(self) -> None:
+        if self._cubes_last_result is None or self.cubes_selected is None:
+            messagebox.showwarning("Нет данных", "Сначала нажмите «Применить».")
+            return
+        corr = self.cubes_fits[self.cubes_selected]
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить результат как...",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("Все файлы", "*.*")],
+            initialfile=f"{corr.endpoint}_{corr.horizon}.csv",
+        )
+        if not path:
+            return
+        try:
+            out = pd.DataFrame({corr.x_var: self._cubes_last_input, corr.endpoint: self._cubes_last_result})
+            out.to_csv(path, index=False)
+            messagebox.showinfo("Готово", f"Сохранено:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    def on_export_cubes(self) -> None:
+        if not self.cubes_fits:
+            messagebox.showwarning("Нет данных", "Сначала загрузите данные и нажмите «Построить».")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить таблицу корреляций как...",
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+            initialfile="endpoint_correlations.xlsx",
+        )
+        if not path:
+            return
+        try:
+            rows = [
+                {
+                    "horizon": c.horizon, "endpoint": c.endpoint, "x_var": c.x_var, "form": c.form,
+                    "a": c.a, "b": c.b, "r2": c.r2, "n": c.n, "x_min": c.x_min, "x_max": c.x_max,
+                }
+                for c in self.cubes_fits
+            ]
+            pd.DataFrame(rows).to_excel(path, index=False)
             messagebox.showinfo("Готово", f"Сохранено:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
