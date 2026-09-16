@@ -28,13 +28,15 @@ from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
 from .report import save_results
-from .scal_export import format_coreywo, format_swof
 from .rocktype import classify_by_permeability
+from .scal_export import format_coreywo, format_swof
+from .swir_crosscheck import crosscheck_swir
 
 ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
 PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan", "black"]
 OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
+CROSSCHECK_COLUMNS = ("well", "sample", "model_OFP", "Swir_Pc", "Swir_OFP", "diff", "perm_mD", "porosity_pct")
 
 
 def _fmt_num(value: float) -> str:
@@ -57,6 +59,8 @@ class JFunctionApp:
         self.ofp_per_model: pd.DataFrame | None = None
         self.ofp_unified = None
 
+        self.crosscheck_result: pd.DataFrame | None = None
+
         self._build_widgets()
         self._update_cos_labels()
 
@@ -69,8 +73,10 @@ class JFunctionApp:
 
         jfunc_tab = ttk.Frame(outer)
         ofp_tab = ttk.Frame(outer)
+        crosscheck_tab = ttk.Frame(outer)
         outer.add(jfunc_tab, text="J-функция")
         outer.add(ofp_tab, text="ОФП (Кори)")
+        outer.add(crosscheck_tab, text="Сверка Swir")
 
         top = ttk.Frame(jfunc_tab, padding=8)
         top.pack(fill="x")
@@ -152,6 +158,69 @@ class JFunctionApp:
 
         self._build_rocktype_tab(rocktype_tab)
         self._build_ofp_tab(ofp_tab)
+        self._build_crosscheck_tab(crosscheck_tab)
+
+    def _build_crosscheck_tab(self, parent: ttk.Widget) -> None:
+        """Сверка Swir: капилляриметрия (J-функция) vs ОФП по общим образцам керна."""
+        top = ttk.Frame(parent, padding=8)
+        top.pack(fill="x")
+
+        ttk.Button(top, text="Сравнить", command=self.on_run_crosscheck).pack(side="left")
+        self.crosscheck_info_label = ttk.Label(
+            top, text="Загрузите данные на вкладках «J-функция» и «ОФП (Кори)», затем нажмите «Сравнить»."
+        )
+        self.crosscheck_info_label.pack(side="left", padx=10)
+        ttk.Button(
+            top, text="Экспортировать таблицу...", command=self.on_export_crosscheck
+        ).pack(side="right")
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.crosscheck_figure = Figure(figsize=(5.5, 5), dpi=100)
+        self.crosscheck_ax = self.crosscheck_figure.add_subplot(111)
+        self.crosscheck_canvas = FigureCanvasTkAgg(self.crosscheck_figure, master=body)
+        self.crosscheck_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        stats = ttk.LabelFrame(right, text="Сводка", padding=8)
+        stats.pack(fill="x")
+
+        self.crosscheck_n_var = tk.StringVar(value="-")
+        self.crosscheck_corr_var = tk.StringVar(value="-")
+        self.crosscheck_mean_var = tk.StringVar(value="-")
+        self.crosscheck_median_var = tk.StringVar(value="-")
+
+        stats_rows = [
+            ("Найдено общих образцов", self.crosscheck_n_var),
+            ("Корреляция R", self.crosscheck_corr_var),
+            ("Средняя |разница|", self.crosscheck_mean_var),
+            ("Медиана |разница|", self.crosscheck_median_var),
+        ]
+        for r, (label, var) in enumerate(stats_rows):
+            ttk.Label(stats, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=1)
+            ttk.Entry(stats, textvariable=var, width=10, justify="right", state="readonly").grid(
+                row=r, column=1, pady=1
+            )
+
+        tree_frame = ttk.Frame(right)
+        tree_frame.pack(fill="both", expand=True, pady=(8, 0))
+        self.crosscheck_tree = ttk.Treeview(
+            tree_frame, columns=CROSSCHECK_COLUMNS, show="headings", height=14
+        )
+        for col in CROSSCHECK_COLUMNS:
+            self.crosscheck_tree.heading(col, text=col)
+            self.crosscheck_tree.column(col, width=80, anchor="center")
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.crosscheck_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.crosscheck_tree.xview)
+        self.crosscheck_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.crosscheck_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
 
     def _build_ofp_tab(self, parent: ttk.Widget) -> None:
         """Вкладка ОФП: загрузка Word-отчёта лаборатории и расчёт степеней Кори (nw, now)."""
@@ -1075,6 +1144,105 @@ class JFunctionApp:
         try:
             Path(path).write_text(text, encoding="utf-8")
             messagebox.showinfo("Готово", f"SWOF сохранён:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    # -------------------------------------------------------- Сверка Swir
+
+    def on_run_crosscheck(self) -> None:
+        if self.df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите данные на вкладке «J-функция».")
+            return
+        if self.ofp_df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите ОФП-отчёт на вкладке «ОФП (Кори)».")
+            return
+
+        try:
+            result = crosscheck_swir(self.df, self.ofp_df)
+        except ValueError as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
+
+        self.crosscheck_result = result
+        if result.empty:
+            self.crosscheck_info_label.config(
+                text="Общих образцов (керн, измеренный и в J-функции, и в ОФП) не найдено."
+            )
+        else:
+            n_total = self.df["sample"].nunique() if "sample" in self.df.columns else "?"
+            self.crosscheck_info_label.config(
+                text=f"Найдено {len(result)} общих образцов из {n_total} в J-функции."
+            )
+        self._update_crosscheck_table(result)
+        self._update_crosscheck_stats(result)
+        self._update_crosscheck_plot(result)
+
+    def _update_crosscheck_table(self, result: pd.DataFrame) -> None:
+        self.crosscheck_tree.delete(*self.crosscheck_tree.get_children())
+        for _, row in result.iterrows():
+            values = []
+            for col in CROSSCHECK_COLUMNS:
+                v = row.get(col, "")
+                if isinstance(v, float):
+                    values.append("-" if v != v else f"{v:.4f}")
+                else:
+                    values.append(v)
+            self.crosscheck_tree.insert("", "end", values=values)
+
+    def _update_crosscheck_stats(self, result: pd.DataFrame) -> None:
+        if result.empty:
+            for var in (
+                self.crosscheck_n_var, self.crosscheck_corr_var,
+                self.crosscheck_mean_var, self.crosscheck_median_var,
+            ):
+                var.set("-")
+            return
+        self.crosscheck_n_var.set(str(len(result)))
+        corr = result["Swir_Pc"].corr(result["Swir_OFP"])
+        self.crosscheck_corr_var.set(f"{corr:.4f}" if corr == corr else "-")
+        self.crosscheck_mean_var.set(f"{result['abs_diff'].mean():.4f}")
+        self.crosscheck_median_var.set(f"{result['abs_diff'].median():.4f}")
+
+    def _update_crosscheck_plot(self, result: pd.DataFrame) -> None:
+        self.crosscheck_ax.clear()
+        if not result.empty:
+            wells = sorted(result["well"].dropna().astype(str).unique())
+            well_colors = {w: PINNED_COLORS[i % len(PINNED_COLORS)] for i, w in enumerate(wells)}
+            for well, sub in result.groupby("well"):
+                color = well_colors.get(str(well), "gray")
+                self.crosscheck_ax.scatter(
+                    sub["Swir_Pc"], sub["Swir_OFP"], s=60, alpha=0.8, color=color,
+                    edgecolor="black", label=f"скв. {well}",
+                )
+            lo = min(result["Swir_Pc"].min(), result["Swir_OFP"].min()) - 0.02
+            hi = max(result["Swir_Pc"].max(), result["Swir_OFP"].max()) + 0.02
+            self.crosscheck_ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.5, label="Swir(Pc) = Swir(ОФП)")
+            self.crosscheck_ax.set_xlim(lo, hi)
+            self.crosscheck_ax.set_ylim(lo, hi)
+            self.crosscheck_ax.legend(fontsize=8)
+
+        self.crosscheck_ax.set_xlabel("Swir по капилляриметрии (J-функция)")
+        self.crosscheck_ax.set_ylabel("Swir по ОФП")
+        self.crosscheck_ax.set_title("Сверка Swir по общим образцам")
+        self.crosscheck_ax.grid(True, alpha=0.3)
+        self.crosscheck_canvas.draw()
+
+    def on_export_crosscheck(self) -> None:
+        if self.crosscheck_result is None or self.crosscheck_result.empty:
+            messagebox.showwarning("Нет данных", "Сначала выполните сравнение (кнопка «Сравнить»).")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить таблицу сверки как...",
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+            initialfile="swir_crosscheck.xlsx",
+        )
+        if not path:
+            return
+        try:
+            self.crosscheck_result.to_excel(path, index=False)
+            messagebox.showinfo("Готово", f"Сохранено:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
 
