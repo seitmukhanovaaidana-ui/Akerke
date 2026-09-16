@@ -24,7 +24,12 @@ from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
 from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_params
-from .endpoint_cubes import apply_correlation, fit_endpoint_cubes, load_endpoint_summary_xlsx
+from .endpoint_cubes import (
+    apply_correlation,
+    fit_endpoint_cubes,
+    group_by_formation,
+    load_endpoint_summary_xlsx,
+)
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
@@ -69,6 +74,7 @@ class JFunctionApp:
         self.petro_fits: pd.DataFrame | None = None
 
         self.cubes_df: pd.DataFrame | None = None
+        self.cubes_active_df: pd.DataFrame | None = None
         self.cubes_fits: list = []
         self.cubes_selected: int | None = None
         self._cubes_last_input: list | None = None
@@ -244,7 +250,14 @@ class JFunctionApp:
         self.cubes_file_label = ttk.Label(top, text="Файл не загружен")
         self.cubes_file_label.pack(side="left", padx=10)
 
-        ttk.Label(top, text="Мин. образцов на горизонт:").pack(side="left", padx=(20, 4))
+        ttk.Label(top, text="Группировка:").pack(side="left", padx=(20, 4))
+        self.cubes_grouping_var = tk.StringVar(value="По горизонту")
+        ttk.Combobox(
+            top, textvariable=self.cubes_grouping_var, state="readonly", width=13,
+            values=["По горизонту", "Мел/Юра"],
+        ).pack(side="left")
+
+        ttk.Label(top, text="Мин. образцов на группу:").pack(side="left", padx=(20, 4))
         self.cubes_min_samples_var = tk.StringVar(value="4")
         ttk.Entry(top, textvariable=self.cubes_min_samples_var, width=5).pack(side="left")
         ttk.Button(top, text="Построить", command=self.on_run_cubes).pack(side="left", padx=(8, 0))
@@ -1520,10 +1533,15 @@ class JFunctionApp:
         try:
             min_samples = int(self.cubes_min_samples_var.get())
         except ValueError:
-            messagebox.showerror("Ошибка", "«Мин. образцов на горизонт» должно быть целым числом.")
+            messagebox.showerror("Ошибка", "«Мин. образцов на группу» должно быть целым числом.")
             return
 
-        self.cubes_fits = fit_endpoint_cubes(self.cubes_df, min_samples=min_samples)
+        if self.cubes_grouping_var.get() == "Мел/Юра":
+            self.cubes_active_df = group_by_formation(self.cubes_df)
+        else:
+            self.cubes_active_df = self.cubes_df
+
+        self.cubes_fits = fit_endpoint_cubes(self.cubes_active_df, min_samples=min_samples)
         self._update_cubes_table()
         self.cubes_selected = None
         self._cubes_last_input = None
@@ -1561,7 +1579,9 @@ class JFunctionApp:
 
     def _update_cubes_plot(self, corr) -> None:
         self.cubes_ax.clear()
-        sub = self.cubes_df[self.cubes_df["horizon"] == corr.horizon].dropna(subset=[corr.x_var, corr.endpoint])
+        sub = self.cubes_active_df[self.cubes_active_df["horizon"] == corr.horizon].dropna(
+            subset=[corr.x_var, corr.endpoint]
+        )
         self.cubes_ax.scatter(sub[corr.x_var], sub[corr.endpoint], s=40, color="steelblue", edgecolor="black")
 
         xx = np.linspace(corr.x_min, corr.x_max, 100)

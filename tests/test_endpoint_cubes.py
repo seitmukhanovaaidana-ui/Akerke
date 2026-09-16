@@ -4,7 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jfunction.endpoint_cubes import apply_correlation, fit_best_correlation, fit_endpoint_cubes
+from jfunction.endpoint_cubes import (
+    apply_correlation,
+    classify_formation,
+    fit_best_correlation,
+    fit_endpoint_cubes,
+    group_by_formation,
+)
 
 
 def test_fit_best_correlation_recovers_exact_exponential():
@@ -52,3 +58,29 @@ def test_apply_correlation_matches_predict():
     result = apply_correlation(corr, [15, 20, 25])
     expected = corr.predict([15, 20, 25])
     assert np.allclose(result, expected)
+
+
+def test_classify_formation():
+    assert classify_formation("апт") == "мел"
+    assert classify_formation("II-alb (альбский)") == "мел"
+    assert classify_formation("мел (не уточнён)") == "мел"
+    assert classify_formation("III-nc (неокомский)") == "мел"
+    assert classify_formation("Ю-VI") == "юра"
+    assert classify_formation("Ю-III") == "юра"
+    assert classify_formation("юра") == "юра"
+    assert classify_formation("I1-J2 (юрский)") == "юра"
+    assert classify_formation("что-то непонятное") is None
+
+
+def test_group_by_formation_drops_unclassified_and_merges_groups():
+    df = pd.DataFrame(
+        {
+            "horizon": ["апт", "Ю-III", "Ю-V", "неизвестно"],
+            "porosity_pct": [30, 25, 28, 20],
+        }
+    )
+    grouped = group_by_formation(df)
+
+    assert len(grouped) == 3
+    assert set(grouped["horizon"]) == {"мел", "юра"}
+    assert list(grouped.loc[grouped["horizon"] == "юра", "porosity_pct"]) == [25, 28]

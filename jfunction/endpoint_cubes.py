@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -80,6 +81,31 @@ def load_endpoint_summary_xlsx(path: str, sheet_name: str = "ОФП") -> pd.Data
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def classify_formation(horizon: str) -> str | None:
+    """
+    Укрупнённая классификация горизонта до мел/юра по названию (апт,
+    альб, неоком, "мел..." -> мел; Ю-*, "юра", "...юрский" -> юра).
+    Возвращает None, если горизонт не удалось классифицировать.
+    """
+    h = str(horizon).strip().lower()
+    if h.startswith("ю-") or "юр" in h:
+        return "юра"
+    if any(key in h for key in ("мел", "альб", "апт", "неоком")):
+        return "мел"
+    return None
+
+
+def group_by_formation(df: pd.DataFrame, horizon_col: str = "horizon") -> pd.DataFrame:
+    """
+    Возвращает копию df, где столбец horizon_col заменён на укрупнённую
+    группу "мел"/"юра" (строки, которые не удалось классифицировать,
+    отбрасываются).
+    """
+    out = df.copy()
+    out[horizon_col] = out[horizon_col].map(classify_formation)
+    return out.dropna(subset=[horizon_col])
 
 
 @dataclass(frozen=True)
