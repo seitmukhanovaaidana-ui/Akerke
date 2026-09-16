@@ -221,3 +221,90 @@ def fit_endpoint_cubes(df: pd.DataFrame, min_samples: int = 4) -> list[Correlati
 def apply_correlation(corr: Correlation, x_values) -> np.ndarray:
     """Применяет корреляцию к массиву значений Кп/k - то есть строит "куб" концевой точки."""
     return corr.predict(x_values)
+
+
+# --------------------------------------------------------------------------- контроль качества
+
+QUALITY_OK = "ok"
+QUALITY_WARNING = "warning"
+QUALITY_BAD = "bad"
+
+_BOUNDED_ENDPOINTS = ("Swir", "Sor", "krwmax")
+
+
+def quality_flags(corr: Correlation) -> list[str]:
+    """
+    Список замечаний к качеству подбора корреляции:
+    - низкий/неопределённый R²;
+    - малая выборка (n <= 5), на которой легко получить случайную зависимость;
+    - прогноз выходит за физический диапазон [0, 1] уже в пределах диапазона
+      обучающих данных (Swir/Sor/krwmax - насыщенности и ОФП, не могут быть
+      вне [0, 1]);
+    - неустойчивость при небольшой экстраполяции (+-10% от диапазона данных) -
+      именно так проявляет себя случай вида Ю-VIб (a~1e14 при отрицательном b).
+    """
+    flags: list[str] = []
+
+    if corr.r2 != corr.r2:  # NaN
+        flags.append("R² не определён")
+    elif corr.r2 < 0.5:
+        flags.append(f"низкий R² ({corr.r2:.2f})")
+    elif corr.r2 < 0.75:
+        flags.append(f"средний R² ({corr.r2:.2f})")
+
+    if corr.n <= 5:
+        flags.append(f"малая выборка (n={corr.n})")
+
+    if corr.endpoint in _BOUNDED_ENDPOINTS and corr.x_max > corr.x_min:
+        xx = np.linspace(corr.x_min, corr.x_max, 20)
+        yy = corr.predict(xx)
+        if np.any(yy < -0.01) or np.any(yy > 1.01):
+            flags.append("прогноз выходит за физический диапазон [0,1] в пределах данных")
+
+        span = corr.x_max - corr.x_min
+        x_ext = np.array([corr.x_min - 0.1 * span, corr.x_max + 0.1 * span])
+        if corr.form in ("log", "power"):
+            x_ext = x_ext[x_ext > 0]
+        if len(x_ext):
+            y_ext = corr.predict(x_ext)
+            if np.any(y_ext < -0.2) or np.any(y_ext > 1.2):
+                flags.append("неустойчиво при экстраполяции за пределы диапазона данных")
+
+    return flags
+
+
+def quality_level(corr: Correlation) -> str:
+    """Сводная оценка качества: "bad" (не доверять), "warning" (использовать осторожно), "ok"."""
+    flags = quality_flags(corr)
+    if any(
+        ("физический диапазон" in f) or ("не определён" in f) or ("низкий R²" in f)
+        for f in flags
+    ):
+        return QUALITY_BAD
+    if flags:
+        return QUALITY_WARNING
+    return QUALITY_OK
+
+
+def check_apply_inputs(corr: Correlation, x_values) -> list[str]:
+    """
+    Предупреждения при применении корреляции к конкретным значениям Кп/k:
+    выход за диапазон обучающих данных (экстраполяция) и нефизичные
+    (вне [0,1]) прогнозные значения концевой точки.
+    """
+    x = np.asarray(x_values, dtype=float)
+    warnings: list[str] = []
+
+    out_of_range = (x < corr.x_min) | (x > corr.x_max)
+    if np.any(out_of_range):
+        warnings.append(
+            f"{int(np.sum(out_of_range))} из {len(x)} значений вне диапазона обучающих "
+            f"данных [{corr.x_min:.3g}, {corr.x_max:.3g}] - экстраполяция менее надёжна"
+        )
+
+    if corr.endpoint in _BOUNDED_ENDPOINTS:
+        y = corr.predict(x)
+        if np.any(y < 0) or np.any(y > 1):
+            warnings.append("часть прогнозных значений выходит за физический диапазон [0, 1]")
+
+    return warnings

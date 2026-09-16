@@ -26,9 +26,12 @@ from .calc import JFunctionConstants, add_derived_columns
 from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_params
 from .endpoint_cubes import (
     apply_correlation,
+    check_apply_inputs,
     fit_endpoint_cubes,
     group_by_formation,
     load_endpoint_summary_xlsx,
+    quality_flags,
+    quality_level,
 )
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
@@ -298,6 +301,13 @@ class JFunctionApp:
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
         self.cubes_tree.bind("<<TreeviewSelect>>", self._on_cubes_select)
+        self.cubes_tree.tag_configure("qc_ok", background="")
+        self.cubes_tree.tag_configure("qc_warning", background="#fff3cd")
+        self.cubes_tree.tag_configure("qc_bad", background="#f8d7da")
+
+        self.cubes_qc_var = tk.StringVar(value="")
+        self.cubes_qc_label = ttk.Label(right, textvariable=self.cubes_qc_var, wraplength=320, justify="left")
+        self.cubes_qc_label.pack(anchor="w", pady=(6, 0))
 
         apply_frame = ttk.LabelFrame(right, text="Применить к массиву значений (построить «куб»)", padding=8)
         apply_frame.pack(fill="x", pady=(8, 0))
@@ -312,9 +322,10 @@ class JFunctionApp:
             btn_row, text="Сохранить результат в CSV...", command=self.on_save_cube_result
         ).pack(side="left", padx=(8, 0))
         self.cubes_output_var = tk.StringVar(value="")
-        ttk.Label(apply_frame, textvariable=self.cubes_output_var, wraplength=320, foreground="#1a7f37").pack(
-            anchor="w", pady=(4, 0)
+        self.cubes_output_label = ttk.Label(
+            apply_frame, textvariable=self.cubes_output_var, wraplength=320, foreground="#1a7f37"
         )
+        self.cubes_output_label.pack(anchor="w", pady=(4, 0))
 
     def _build_crosscheck_tab(self, parent: ttk.Widget) -> None:
         """Сверка Swir: капилляриметрия (J-функция) vs ОФП по общим образцам керна."""
@@ -1547,6 +1558,7 @@ class JFunctionApp:
         self._cubes_last_input = None
         self._cubes_last_result = None
         self.cubes_output_var.set("")
+        self.cubes_qc_var.set("")
         self.cubes_ax.clear()
         self.cubes_canvas.draw()
 
@@ -1567,6 +1579,7 @@ class JFunctionApp:
                     corr.horizon, corr.endpoint, corr.x_var, corr.form,
                     f"{corr.a:.4g}", f"{corr.b:.4g}", f"{corr.r2:.3f}", corr.n,
                 ),
+                tags=(f"qc_{quality_level(corr)}",),
             )
 
     def _on_cubes_select(self, _event=None) -> None:
@@ -1575,7 +1588,21 @@ class JFunctionApp:
             return
         idx = self.cubes_tree.index(sel[0])
         self.cubes_selected = idx
-        self._update_cubes_plot(self.cubes_fits[idx])
+        corr = self.cubes_fits[idx]
+        self._update_cubes_plot(corr)
+        self._update_cubes_qc(corr)
+
+    def _update_cubes_qc(self, corr) -> None:
+        flags = quality_flags(corr)
+        if not flags:
+            self.cubes_qc_label.config(foreground="#1a7f37")
+            self.cubes_qc_var.set("✓ контроль качества: замечаний нет")
+            return
+        level = quality_level(corr)
+        color = "#c0392b" if level == "bad" else "#b7791f"
+        mark = "✗" if level == "bad" else "⚠"
+        self.cubes_qc_label.config(foreground=color)
+        self.cubes_qc_var.set(f"{mark} " + "; ".join(flags))
 
     def _update_cubes_plot(self, corr) -> None:
         self.cubes_ax.clear()
@@ -1616,7 +1643,14 @@ class JFunctionApp:
         self._cubes_last_input = values
         self._cubes_last_result = result
         pairs = ", ".join(f"{x:g}→{y:.4f}" for x, y in zip(values, result))
-        self.cubes_output_var.set(f"{corr.endpoint} по {corr.horizon}: {pairs}")
+        apply_warnings = check_apply_inputs(corr, values)
+        if apply_warnings:
+            msg = f"{corr.endpoint} по {corr.horizon}: {pairs}\n⚠ " + "; ".join(apply_warnings)
+            self.cubes_output_label.config(foreground="#b7791f")
+        else:
+            msg = f"{corr.endpoint} по {corr.horizon}: {pairs}"
+            self.cubes_output_label.config(foreground="#1a7f37")
+        self.cubes_output_var.set(msg)
 
     def on_save_cube_result(self) -> None:
         if self._cubes_last_result is None or self.cubes_selected is None:
@@ -1657,6 +1691,7 @@ class JFunctionApp:
                 {
                     "horizon": c.horizon, "endpoint": c.endpoint, "x_var": c.x_var, "form": c.form,
                     "a": c.a, "b": c.b, "r2": c.r2, "n": c.n, "x_min": c.x_min, "x_max": c.x_max,
+                    "качество": quality_level(c), "замечания": "; ".join(quality_flags(c)),
                 }
                 for c in self.cubes_fits
             ]
