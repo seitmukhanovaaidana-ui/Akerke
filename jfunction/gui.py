@@ -27,6 +27,7 @@ from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_param
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
+from .petro import fit_poro_perm_by_horizon, load_core_petro_xlsx
 from .report import save_results
 from .rocktype import classify_by_permeability
 from .scal_export import format_coreywo, format_swof
@@ -37,6 +38,7 @@ TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
 PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan", "black"]
 OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
 CROSSCHECK_COLUMNS = ("well", "sample", "model_OFP", "Swir_Pc", "Swir_OFP", "diff", "perm_mD", "porosity_pct")
+PETRO_COLUMNS = ("horizon", "n", "a", "b", "r2", "poro_min", "poro_max", "perm_min", "perm_max")
 
 
 def _fmt_num(value: float) -> str:
@@ -61,6 +63,9 @@ class JFunctionApp:
 
         self.crosscheck_result: pd.DataFrame | None = None
 
+        self.petro_df: pd.DataFrame | None = None
+        self.petro_fits: pd.DataFrame | None = None
+
         self._build_widgets()
         self._update_cos_labels()
 
@@ -74,9 +79,11 @@ class JFunctionApp:
         jfunc_tab = ttk.Frame(outer)
         ofp_tab = ttk.Frame(outer)
         crosscheck_tab = ttk.Frame(outer)
+        petro_tab = ttk.Frame(outer)
         outer.add(jfunc_tab, text="J-функция")
         outer.add(ofp_tab, text="ОФП (Кори)")
         outer.add(crosscheck_tab, text="Сверка Swir")
+        outer.add(petro_tab, text="Петрофизика по горизонтам")
 
         top = ttk.Frame(jfunc_tab, padding=8)
         top.pack(fill="x")
@@ -159,6 +166,61 @@ class JFunctionApp:
         self._build_rocktype_tab(rocktype_tab)
         self._build_ofp_tab(ofp_tab)
         self._build_crosscheck_tab(crosscheck_tab)
+        self._build_petro_tab(petro_tab)
+
+    def _build_petro_tab(self, parent: ttk.Widget) -> None:
+        """Петрофизика керна по горизонтам: k = a*exp(b*Кп) отдельно на каждый горизонт."""
+        top = ttk.Frame(parent, padding=8)
+        top.pack(fill="x")
+
+        ttk.Button(
+            top, text="Загрузить петрофизику керна (.xlsx)...", command=self.on_load_petro
+        ).pack(side="left")
+        self.petro_file_label = ttk.Label(top, text="Файл не загружен")
+        self.petro_file_label.pack(side="left", padx=10)
+
+        ttk.Label(top, text="Мин. образцов на горизонт:").pack(side="left", padx=(20, 4))
+        self.petro_min_samples_var = tk.StringVar(value="5")
+        ttk.Entry(top, textvariable=self.petro_min_samples_var, width=5).pack(side="left")
+        ttk.Button(top, text="Построить", command=self.on_run_petro).pack(side="left", padx=(8, 0))
+
+        ttk.Button(
+            top, text="Экспортировать таблицу...", command=self.on_export_petro
+        ).pack(side="right")
+
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.petro_figure = Figure(figsize=(6, 5), dpi=100)
+        self.petro_ax = self.petro_figure.add_subplot(111)
+        self.petro_canvas = FigureCanvasTkAgg(self.petro_figure, master=body)
+        self.petro_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+
+        ttk.Label(
+            right,
+            text="k = a·exp(b·Кп), МНК по ln(k) от Кп, отдельно на каждый горизонт\n"
+                 "(горизонты с числом образцов меньше порога не показываются -\n"
+                 "тренд на 1-3 точках не показателен).",
+            justify="left", wraplength=280,
+        ).pack(anchor="w", pady=(0, 6))
+
+        tree_frame = ttk.Frame(right)
+        tree_frame.pack(fill="both", expand=True)
+        self.petro_tree = ttk.Treeview(tree_frame, columns=PETRO_COLUMNS, show="headings", height=14)
+        for col in PETRO_COLUMNS:
+            self.petro_tree.heading(col, text=col)
+            self.petro_tree.column(col, width=75, anchor="center")
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.petro_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.petro_tree.xview)
+        self.petro_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.petro_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
 
     def _build_crosscheck_tab(self, parent: ttk.Widget) -> None:
         """Сверка Swir: капилляриметрия (J-функция) vs ОФП по общим образцам керна."""
@@ -1242,6 +1304,105 @@ class JFunctionApp:
             return
         try:
             self.crosscheck_result.to_excel(path, index=False)
+            messagebox.showinfo("Готово", f"Сохранено:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    # ------------------------------------------------ Петрофизика по горизонтам
+
+    def on_load_petro(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Выберите файл с результатами петрофизического анализа керна",
+            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            df = load_core_petro_xlsx(path)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка загрузки", str(exc))
+            return
+
+        if df.empty:
+            messagebox.showwarning("Нет данных", "Не удалось найти данные в файле.")
+            return
+
+        self.petro_df = df
+        self.petro_file_label.config(
+            text=f"{Path(path).name}  ({len(df)} образцов, {df['horizon'].nunique()} горизонтов)"
+        )
+        self.on_run_petro()
+
+    def on_run_petro(self) -> None:
+        if self.petro_df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите файл с петрофизикой керна.")
+            return
+        try:
+            min_samples = int(self.petro_min_samples_var.get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "«Мин. образцов на горизонт» должно быть целым числом.")
+            return
+
+        fits = fit_poro_perm_by_horizon(self.petro_df, min_samples=min_samples)
+        self.petro_fits = fits
+        self._update_petro_table(fits)
+        self._update_petro_plot(self.petro_df, fits)
+
+    def _update_petro_table(self, fits: pd.DataFrame) -> None:
+        self.petro_tree.delete(*self.petro_tree.get_children())
+        for _, row in fits.iterrows():
+            values = []
+            for col in PETRO_COLUMNS:
+                v = row.get(col, "")
+                if isinstance(v, float):
+                    values.append("-" if v != v else f"{v:.4g}")
+                else:
+                    values.append(v)
+            self.petro_tree.insert("", "end", values=values)
+
+    def _update_petro_plot(self, df: pd.DataFrame, fits: pd.DataFrame) -> None:
+        self.petro_ax.clear()
+        horizons = list(fits["horizon"]) if not fits.empty else []
+        color_map = {h: PINNED_COLORS[i % len(PINNED_COLORS)] for i, h in enumerate(horizons)}
+
+        for horizon, sub in df.groupby("horizon"):
+            sub = sub.dropna(subset=["poro_open", "perm_gas"])
+            sub = sub[sub["perm_gas"] > 0]
+            if sub.empty:
+                continue
+            color = color_map.get(horizon, "lightgray")
+            label = f"{horizon} (n={len(sub)})" if horizon in color_map else None
+            self.petro_ax.scatter(sub["poro_open"], sub["perm_gas"], s=20, alpha=0.7, color=color, label=label)
+
+        for _, row in fits.iterrows():
+            color = color_map.get(row["horizon"], "black")
+            xx = np.linspace(row["poro_min"], row["poro_max"], 50)
+            yy = row["a"] * np.exp(row["b"] * xx)
+            self.petro_ax.plot(xx, yy, color=color, linewidth=2)
+
+        self.petro_ax.set_yscale("log")
+        self.petro_ax.set_xlabel("Пористость (открытая), %")
+        self.petro_ax.set_ylabel("Проницаемость (газ), мД")
+        self.petro_ax.set_title("k = a·exp(b·Кп) по горизонтам")
+        self.petro_ax.legend(fontsize=8)
+        self.petro_ax.grid(True, which="both", alpha=0.3)
+        self.petro_canvas.draw()
+
+    def on_export_petro(self) -> None:
+        if self.petro_fits is None or self.petro_fits.empty:
+            messagebox.showwarning("Нет данных", "Сначала загрузите данные и нажмите «Построить».")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить таблицу зависимостей как...",
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+            initialfile="poro_perm_by_horizon.xlsx",
+        )
+        if not path:
+            return
+        try:
+            self.petro_fits.to_excel(path, index=False)
             messagebox.showinfo("Готово", f"Сохранено:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
