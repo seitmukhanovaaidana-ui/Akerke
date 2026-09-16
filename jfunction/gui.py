@@ -28,6 +28,7 @@ from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
 from .report import save_results
+from .scal_export import format_coreywo, format_swof
 from .rocktype import classify_by_permeability
 
 ALL = "Все"
@@ -161,6 +162,8 @@ class JFunctionApp:
         self.ofp_file_label = ttk.Label(top, text="Файл не загружен")
         self.ofp_file_label.pack(side="left", padx=10)
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export_ofp).pack(side="right")
+        ttk.Button(top, text="Экспорт SWOF...", command=self.on_export_swof).pack(side="right", padx=(0, 8))
+        ttk.Button(top, text="Экспорт COREYWO...", command=self.on_export_coreywo).pack(side="right", padx=(0, 8))
 
         body = ttk.Frame(parent)
         body.pack(fill="both", expand=True, padx=8, pady=4)
@@ -1017,6 +1020,61 @@ class JFunctionApp:
             self.ofp_per_model.to_excel(coeffs_path, index=False)
             self.ofp_figure.savefig(plot_path, dpi=200, bbox_inches="tight")
             messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}\n{plot_path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    def _current_ofp_endpoints(self) -> tuple[float, float, float, float, float] | None:
+        """Текущие nw, now (авто-медиана или вручную) + Swir/Sor/krwmax (среднее по образцам)."""
+        if self.ofp_unified is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите ОФП-отчёт.")
+            return None
+        try:
+            nw = float(self.ofp_nw_var.get())
+            now = float(self.ofp_now_var.get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "nw и now должны быть числами.")
+            return None
+        return nw, now, self.ofp_unified.swir, self.ofp_unified.sor, self.ofp_unified.krwmax
+
+    def on_export_coreywo(self) -> None:
+        endpoints = self._current_ofp_endpoints()
+        if endpoints is None:
+            return
+        nw, now, swir, sor, krwmax = endpoints
+        text = format_coreywo(nw, now, swir, sor, krwmax)
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить COREYWO как...",
+            defaultextension=".txt",
+            filetypes=[("Текстовый файл", "*.txt"), ("Все файлы", "*.*")],
+            initialfile="coreywo.txt",
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+            messagebox.showinfo("Готово", f"COREYWO сохранён:\n{path}\n\n{text}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка экспорта", str(exc))
+
+    def on_export_swof(self) -> None:
+        endpoints = self._current_ofp_endpoints()
+        if endpoints is None:
+            return
+        nw, now, swir, sor, krwmax = endpoints
+        text = format_swof(nw, now, swir, sor, krwmax)
+
+        path = filedialog.asksaveasfilename(
+            title="Сохранить SWOF как...",
+            defaultextension=".txt",
+            filetypes=[("Текстовый файл", "*.txt"), ("Все файлы", "*.*")],
+            initialfile="swof.txt",
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+            messagebox.showinfo("Готово", f"SWOF сохранён:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка экспорта", str(exc))
 
