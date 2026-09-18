@@ -204,6 +204,14 @@ class JFunctionApp:
         ttk.Entry(top, textvariable=self.petro_min_samples_var, width=5).pack(side="left")
         ttk.Button(top, text="Построить", command=self.on_run_petro).pack(side="left", padx=(8, 0))
 
+        ttk.Label(top, text="Горизонт (график):").pack(side="left", padx=(20, 4))
+        self.petro_horizon_var = tk.StringVar(value="Все")
+        self.petro_horizon_combo = ttk.Combobox(
+            top, textvariable=self.petro_horizon_var, state="readonly", width=14, values=["Все"],
+        )
+        self.petro_horizon_combo.pack(side="left")
+        self.petro_horizon_combo.bind("<<ComboboxSelected>>", self._on_petro_filter_change)
+
         ttk.Button(
             top, text="Экспортировать таблицу...", command=self.on_export_petro
         ).pack(side="right")
@@ -241,6 +249,24 @@ class JFunctionApp:
         self.petro_tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+        self.petro_tree.bind("<<TreeviewSelect>>", self._on_petro_tree_select)
+
+        formula_frame = ttk.LabelFrame(right, text="Формула зависимости (для куба в Petrel)", padding=8)
+        formula_frame.pack(fill="x", pady=(8, 0))
+
+        self.petro_formula_var = tk.StringVar(value="Выберите горизонт в таблице или в фильтре выше.")
+        ttk.Label(
+            formula_frame, textvariable=self.petro_formula_var, wraplength=320, justify="left",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w")
+
+        self.petro_formula_expr_var = tk.StringVar(value="")
+        ttk.Entry(formula_frame, textvariable=self.petro_formula_expr_var, state="readonly", width=40).pack(
+            fill="x", pady=(6, 4)
+        )
+        ttk.Button(
+            formula_frame, text="Скопировать формулу", command=self.on_copy_petro_formula
+        ).pack(anchor="w")
 
     def _build_cubes_tab(self, parent: ttk.Widget) -> None:
         """Кубы концевых точек: корреляция Swir/Sor/krwmax от Кп/k по горизонтам + применение к массиву."""
@@ -1451,7 +1477,12 @@ class JFunctionApp:
         fits = fit_poro_perm_by_horizon(self.petro_df, min_samples=min_samples)
         self.petro_fits = fits
         self._update_petro_table(fits)
-        self._update_petro_plot(self.petro_df, fits)
+
+        horizons = sorted(fits["horizon"]) if not fits.empty else []
+        self.petro_horizon_combo.config(values=["Все"] + horizons)
+        self.petro_horizon_var.set("Все")
+        self._set_petro_formula(None)
+        self._update_petro_plot(self.petro_df, fits, horizon_filter="Все")
 
     def _update_petro_table(self, fits: pd.DataFrame) -> None:
         self.petro_tree.delete(*self.petro_tree.get_children())
@@ -1465,10 +1496,60 @@ class JFunctionApp:
                     values.append(v)
             self.petro_tree.insert("", "end", values=values)
 
-    def _update_petro_plot(self, df: pd.DataFrame, fits: pd.DataFrame) -> None:
+    def _on_petro_tree_select(self, _event=None) -> None:
+        sel = self.petro_tree.selection()
+        if not sel or self.petro_fits is None:
+            return
+        idx = self.petro_tree.index(sel[0])
+        row = self.petro_fits.iloc[idx]
+        self.petro_horizon_var.set(row["horizon"])
+        self._update_petro_plot(self.petro_df, self.petro_fits, horizon_filter=row["horizon"])
+        self._set_petro_formula(row)
+
+    def _on_petro_filter_change(self, _event=None) -> None:
+        if self.petro_df is None or self.petro_fits is None:
+            return
+        horizon = self.petro_horizon_var.get()
+        self._update_petro_plot(self.petro_df, self.petro_fits, horizon_filter=horizon)
+        if horizon == "Все":
+            self._set_petro_formula(None)
+        else:
+            match = self.petro_fits[self.petro_fits["horizon"] == horizon]
+            self._set_petro_formula(match.iloc[0] if not match.empty else None)
+
+    def _set_petro_formula(self, row) -> None:
+        if row is None:
+            self.petro_formula_var.set("Выберите горизонт в таблице или в фильтре выше.")
+            self.petro_formula_expr_var.set("")
+            return
+        a, b, r2, n = row["a"], row["b"], row["r2"], row["n"]
+        self.petro_formula_var.set(
+            f"{row['horizon']}: k = {a:.4g}·exp({b:.4g}·Кп)   (R²={r2:.3f}, n={n})"
+        )
+        self.petro_formula_expr_var.set(f"{a:.6g}*Exp({b:.6g}*$Poro)")
+
+    def on_copy_petro_formula(self) -> None:
+        expr = self.petro_formula_expr_var.get()
+        if not expr:
+            messagebox.showwarning("Нет формулы", "Сначала выберите горизонт в таблице или в фильтре.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(expr)
+
+    def _update_petro_plot(self, df: pd.DataFrame, fits: pd.DataFrame, horizon_filter: str = "Все") -> None:
         self.petro_ax.clear()
+
+        if horizon_filter != "Все":
+            df = df[df["horizon"] == horizon_filter]
+            fits = fits[fits["horizon"] == horizon_filter]
+
         horizons = list(fits["horizon"]) if not fits.empty else []
-        color_map = {h: PINNED_COLORS[i % len(PINNED_COLORS)] for i, h in enumerate(horizons)}
+        if horizon_filter != "Все":
+            color_map = {h: "steelblue" for h in horizons}
+            line_color = "red"
+        else:
+            color_map = {h: PINNED_COLORS[i % len(PINNED_COLORS)] for i, h in enumerate(horizons)}
+            line_color = None
 
         for horizon, sub in df.groupby("horizon"):
             sub = sub.dropna(subset=["poro_open", "perm_gas"])
@@ -1477,10 +1558,13 @@ class JFunctionApp:
                 continue
             color = color_map.get(horizon, "lightgray")
             label = f"{horizon} (n={len(sub)})" if horizon in color_map else None
-            self.petro_ax.scatter(sub["poro_open"], sub["perm_gas"], s=20, alpha=0.7, color=color, label=label)
+            self.petro_ax.scatter(
+                sub["poro_open"], sub["perm_gas"], s=20 if horizon_filter == "Все" else 40,
+                alpha=0.7, color=color, edgecolor="black" if horizon_filter != "Все" else None, label=label,
+            )
 
         for _, row in fits.iterrows():
-            color = color_map.get(row["horizon"], "black")
+            color = line_color or color_map.get(row["horizon"], "black")
             xx = np.linspace(row["poro_min"], row["poro_max"], 50)
             yy = row["a"] * np.exp(row["b"] * xx)
             self.petro_ax.plot(xx, yy, color=color, linewidth=2)
@@ -1488,8 +1572,10 @@ class JFunctionApp:
         self.petro_ax.set_yscale("log")
         self.petro_ax.set_xlabel("Пористость (открытая), %")
         self.petro_ax.set_ylabel("Проницаемость (газ), мД")
-        self.petro_ax.set_title("k = a·exp(b·Кп) по горизонтам")
-        self.petro_ax.legend(fontsize=8)
+        title = "k = a·exp(b·Кп) по горизонтам" if horizon_filter == "Все" else f"{horizon_filter}: k = a·exp(b·Кп)"
+        self.petro_ax.set_title(title)
+        if horizon_filter == "Все":
+            self.petro_ax.legend(fontsize=8)
         self.petro_ax.grid(True, which="both", alpha=0.3)
         self.petro_canvas.draw()
 
