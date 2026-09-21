@@ -86,3 +86,67 @@ def test_two_curve_tables_share_one_metadata_block(tmp_path):
 
     assert sorted(df["model"].unique()) == ["305-2", "305-2b"]
     assert len(df) == 4
+
+
+def _add_flat_table(doc, rows):
+    """Строит "плоскую" таблицу формата 2: Горизонт|Скважина|Идентификатор образца|Sw|krw|krow."""
+    table = doc.add_table(rows=1 + len(rows), cols=6)
+    header = table.rows[0].cells
+    header[0].text = "Горизонт"
+    header[1].text = "Скважина"
+    header[2].text = "Идентификатор образца"
+    header[3].text = "Sw"
+    header[4].text = "krw"
+    header[5].text = "krow"
+    for i, (horizon, well, sample, sw, krw, krow) in enumerate(rows, start=1):
+        cells = table.rows[i].cells
+        cells[0].text = horizon
+        cells[1].text = well
+        cells[2].text = sample
+        cells[3].text = sw
+        cells[4].text = krw
+        cells[5].text = krow
+
+
+def test_reads_flat_table_format_grouped_by_sample(tmp_path):
+    """Формат 2: одна таблица Горизонт/Скважина/Идентификатор образца/Sw/krw/krow, без метаданных."""
+    doc = docx.Document()
+    _add_flat_table(
+        doc,
+        [
+            ("Валанжин", "700", "Модель 1", "0.412", "0.000", "1.000"),
+            ("Валанжин", "700", "Модель 1", "0.510", "0.011", "0.554"),
+            ("Валанжин", "700", "Модель 1", "0.709", "0.155", "0.000"),
+            ("Валанжин", "700", "Модель 1", "1.000", "", ""),
+            ("Юра", "НСВ-1", "Модель 5", "0.300", "0.000", "1.000"),
+            ("Юра", "НСВ-1", "Модель 5", "0.600", "0.200", "0.000"),
+        ],
+    )
+    path = tmp_path / "ofp_flat.docx"
+    doc.save(path)
+
+    df = load_ofp_data_from_docx(path)
+
+    assert set(df["horizon"]) == {"Валанжин", "Юра"}
+    valanzhin = df[df["horizon"] == "Валанжин"]
+    assert len(valanzhin) == 3  # терминальная строка Sw=1.0 без krw/krow отброшена
+    assert valanzhin["model"].unique().tolist() == ["700-1"]
+    assert valanzhin["Swir"].iloc[0] == 0.412
+    assert valanzhin["Swmax"].iloc[0] == 0.709
+    assert valanzhin["krwmax"].iloc[0] == 0.155
+    assert valanzhin["krow_swc"].iloc[0] == 1.0
+    assert valanzhin["Sor"].iloc[0] == 1 - 0.709
+
+    yura = df[df["horizon"] == "Юра"]
+    assert len(yura) == 2
+    assert yura["model"].unique().tolist() == ["НСВ-1-5"]
+
+
+def test_flat_table_skips_samples_with_too_few_points(tmp_path):
+    doc = docx.Document()
+    _add_flat_table(doc, [("Валанжин", "700", "Модель 1", "0.412", "0.000", "1.000")])
+    path = tmp_path / "ofp_flat_short.docx"
+    doc.save(path)
+
+    df = load_ofp_data_from_docx(path)
+    assert df.empty

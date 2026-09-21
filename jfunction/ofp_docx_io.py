@@ -1,10 +1,10 @@
 """
 Чтение "сырых" отчётов лаборатории по ОФП (относительным фазовым
-проницаемостям) в формате Word (.docx) - как они присылаются лабораторией
-(см., например, "ПРИЛОЖЕНИЕ 4. Результаты определения относительных фазовых
-проницаемостей").
+проницаемостям) в формате Word (.docx) - как они присылаются лабораторией.
+Поддерживаются два формата отчёта:
 
-Каждый образец в таком отчёте оформлен парой таблиц:
+Формат 1 - каждый образец оформлен парой таблиц (см., например,
+"ПРИЛОЖЕНИЕ 4. Результаты определения относительных фазовых проницаемостей"):
 
 1. "Наименование / Значение" - метаданные образца: скважина, № модели,
    пористость, проницаемость, остаточная водонасыщенность (Swi),
@@ -18,6 +18,13 @@
 Swmax и krwmax берутся как последняя точка кривой (Sw при krow=0), а
 krow_swc - как krow в первой точке (Sw=Swi) - так же, как эти величины
 получены в исходном Excel-файле (лист "Параметризация_Кори").
+
+Формат 2 - одна "плоская" таблица без отдельных метаданных на образец,
+со столбцами Горизонт/Скважина/Идентификатор образца/Sw/krw/krow (каждый
+образец - несколько строк подряд с одинаковыми горизонтом/скважиной/
+идентификатором). Swir и Swmax берутся как первая и последняя строка
+образца, krow_swc и krwmax - как krow первой и krw последней строки;
+Sor, отдельно не заданный в этом формате, считается как 1 - Swmax.
 """
 
 from __future__ import annotations
@@ -164,6 +171,86 @@ def _process_data_table(table, meta: dict, model_counts: dict, rows: list[dict])
         )
 
 
+def _parse_flat_ofp_table(table) -> list[dict]:
+    """
+    Разбирает "плоскую" таблицу отчёта вида Горизонт | Скважина |
+    Идентификатор образца | Sw | krw | krow (формат 2, без отдельных
+    таблиц метаданных на образец - см. описание модуля).
+    """
+    header = [c.text.strip() for c in table.rows[0].cells]
+    cols = _find_curve_columns(header)
+    if cols is None:
+        return []
+    idx_sw, idx_krw, idx_krow = cols
+
+    header_l = [h.lower() for h in header]
+    if "горизонт" not in header_l or "скважина" not in header_l:
+        return []
+    idx_horizon = header_l.index("горизонт")
+    idx_well = header_l.index("скважина")
+    idx_sample = next(
+        (i for i, h in enumerate(header_l) if "образц" in h and i not in (idx_sw, idx_krw, idx_krow)),
+        None,
+    )
+    if idx_sample is None:
+        return []
+
+    needed = max(idx_sw, idx_krw, idx_krow, idx_horizon, idx_well, idx_sample)
+    groups: dict[tuple[str, str, str], list[tuple]] = {}
+    for row in table.rows[1:]:
+        cells = [c.text.strip() for c in row.cells]
+        if needed >= len(cells):
+            continue
+        sw = _to_float(cells[idx_sw])
+        if sw is None:
+            continue
+        krw = _to_float(cells[idx_krw])
+        krow = _to_float(cells[idx_krow])
+        key = (cells[idx_horizon], cells[idx_well], cells[idx_sample])
+        groups.setdefault(key, []).append((sw, krw, krow))
+
+    rows: list[dict] = []
+    model_counts: dict[tuple[str, str], int] = {}
+    for (horizon, well, sample_label), pts_raw in groups.items():
+        pts = [(sw, krw, krow) for sw, krw, krow in pts_raw if krw is not None and krow is not None]
+        if len(pts) < 2:
+            continue
+
+        m = re.search(r"\d+", sample_label)
+        model_num = m.group() if m else sample_label
+        count_key = (well, model_num)
+        count = model_counts.get(count_key, 0)
+        model_counts[count_key] = count + 1
+        suffix = "" if count == 0 else chr(ord("a") + count)
+        model_id = f"{well}-{model_num}{suffix}"
+
+        swir = pts[0][0]
+        swmax = pts[-1][0]
+        krwmax = pts[-1][1]
+        krow_swc = pts[0][2]
+
+        for sw, krw, krow in pts:
+            rows.append(
+                {
+                    "model": model_id,
+                    "well": well,
+                    "horizon": horizon,
+                    "samples": sample_label,
+                    "Sw": sw,
+                    "krw": krw,
+                    "krow": krow,
+                    "Swir": swir,
+                    "Sor": 1 - swmax,
+                    "Swmax": swmax,
+                    "krwmax": krwmax,
+                    "krow_swc": krow_swc,
+                    "porosity_pct": None,
+                    "perm_mD": None,
+                }
+            )
+    return rows
+
+
 def load_ofp_data_from_docx(path: str | Path) -> pd.DataFrame:
     """Извлекает точки кривых ОФП (Sw, krw, krow + Swir/Sor/Swmax/krwmax/krow_swc) из .docx-отчёта.
 
@@ -178,6 +265,16 @@ def load_ofp_data_from_docx(path: str | Path) -> pd.DataFrame:
 
     doc = docx.Document(str(path))
 
+    # Формат 2: одна (или несколько) "плоских" таблиц Горизонт/Скважина/
+    # Идентификатор образца/Sw/krw/krow - без отдельных метаданных на образец.
+    flat_rows: list[dict] = []
+    for table in doc.tables:
+        if table.rows:
+            flat_rows.extend(_parse_flat_ofp_table(table))
+    if flat_rows:
+        return pd.DataFrame(flat_rows)
+
+    # Формат 1: пары таблиц "метаданные образца" + "точки кривой".
     rows: list[dict] = []
     model_counts: dict = {}
     pending_meta: dict | None = None

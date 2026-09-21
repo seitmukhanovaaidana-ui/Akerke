@@ -4,28 +4,35 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jfunction.corey import add_corey_derived_columns, fit_corey_by_model, fit_corey_model, unified_corey_params
+from jfunction.corey import (
+    add_corey_derived_columns,
+    fit_corey_by_model,
+    fit_corey_model,
+    summarize_corey_by_horizon,
+    unified_corey_params,
+)
 
 
-def _synthetic_model(model, well, swir, swmax, krwmax, nw, now, n=8):
+def _synthetic_model(model, well, swir, swmax, krwmax, nw, now, n=8, horizon=None):
     sw_star = np.linspace(0.001, 0.999, n)
     sw = swir + sw_star * (swmax - swir)
     krw = krwmax * sw_star**nw
     krow = 1.0 * (1 - sw_star) ** now
-    return pd.DataFrame(
-        {
-            "model": model,
-            "well": well,
-            "Sw": sw,
-            "krw": krw,
-            "krow": krow,
-            "Swir": swir,
-            "Sor": 1 - swmax,
-            "Swmax": swmax,
-            "krwmax": krwmax,
-            "krow_swc": 1.0,
-        }
-    )
+    data = {
+        "model": model,
+        "well": well,
+        "Sw": sw,
+        "krw": krw,
+        "krow": krow,
+        "Swir": swir,
+        "Sor": 1 - swmax,
+        "Swmax": swmax,
+        "krwmax": krwmax,
+        "krow_swc": 1.0,
+    }
+    if horizon is not None:
+        data["horizon"] = horizon
+    return pd.DataFrame(data)
 
 
 def test_fit_corey_model_recovers_exact_exponents():
@@ -58,3 +65,33 @@ def test_fit_corey_by_model_and_unified_params():
     assert unified.n_models == 2
     assert unified.nw == pytest.approx((2.0 + 2.4) / 2)
     assert unified.swir == pytest.approx((0.2 + 0.25) / 2)
+
+
+def test_summarize_corey_by_horizon():
+    df = pd.concat(
+        [
+            _synthetic_model("A-1", "100", swir=0.2, swmax=0.8, krwmax=0.3, nw=2.0, now=1.5, horizon="Юра"),
+            _synthetic_model("A-2", "100", swir=0.25, swmax=0.75, krwmax=0.28, nw=2.4, now=1.7, horizon="Юра"),
+            _synthetic_model("B-1", "200", swir=0.3, swmax=0.7, krwmax=0.2, nw=1.0, now=1.0, horizon="Триас"),
+        ],
+        ignore_index=True,
+    )
+    per_model = fit_corey_by_model(df, group_col="model")
+
+    summary = summarize_corey_by_horizon(per_model)
+
+    assert set(summary["horizon"]) == {"Юра", "Триас"}
+    yura = summary[summary["horizon"] == "Юра"].iloc[0]
+    assert yura["n_models"] == 2
+    assert yura["nw"] == pytest.approx((2.0 + 2.4) / 2)
+    trias = summary[summary["horizon"] == "Триас"].iloc[0]
+    assert trias["n_models"] == 1
+    assert trias["nw"] == pytest.approx(1.0)
+
+
+def test_summarize_corey_by_horizon_empty_without_horizon_column():
+    df = _synthetic_model("A-1", "100", swir=0.2, swmax=0.8, krwmax=0.3, nw=2.0, now=1.5)
+    per_model = fit_corey_by_model(df, group_col="model")
+
+    summary = summarize_corey_by_horizon(per_model)
+    assert summary.empty

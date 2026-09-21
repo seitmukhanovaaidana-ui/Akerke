@@ -137,6 +137,7 @@ def fit_corey_by_model(df: pd.DataFrame, group_col: str = "model") -> pd.DataFra
             {
                 "model": str(name),
                 "well": sub["well"].iloc[0] if "well" in sub.columns else "",
+                "horizon": sub["horizon"].iloc[0] if "horizon" in sub.columns else "",
                 "n": fit.n,
                 "Swir": sub["Swir"].iloc[0],
                 "Sor": sub["Sor"].iloc[0],
@@ -174,3 +175,33 @@ def unified_corey_params(per_model: pd.DataFrame) -> UnifiedCoreyParams | None:
         krwmax=float(per_model["krwmax"].mean()),
         n_models=len(per_model),
     )
+
+
+def summarize_corey_by_horizon(per_model: pd.DataFrame) -> pd.DataFrame:
+    """
+    Единые параметры Кори (nw/now - медиана, Swir/Sor/krwmax - среднее),
+    посчитанные ОТДЕЛЬНО для каждого горизонта - то же самое, что
+    unified_corey_params(), но по группам "horizon", а не по всей выборке
+    сразу. Требует столбец "horizon" в per_model (см. fit_corey_by_model);
+    если горизонт не был извлечён из отчёта, возвращает пустой DataFrame.
+    """
+    columns = ["horizon", "n_models", "nw", "now", "Swir", "Sor", "krwmax"]
+    if per_model.empty or "horizon" not in per_model.columns:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for horizon, sub in per_model.groupby("horizon", sort=False):
+        if not horizon:
+            continue
+        rows.append(
+            {
+                "horizon": horizon,
+                "n_models": len(sub),
+                "nw": float(sub["nw"].median()),
+                "now": float(sub["now"].median()),
+                "Swir": float(sub["Swir"].mean()),
+                "Sor": float(sub["Sor"].mean()),
+                "krwmax": float(sub["krwmax"].mean()),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)

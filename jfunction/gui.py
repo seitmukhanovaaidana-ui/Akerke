@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from .calc import JFunctionConstants, add_derived_columns
-from .corey import evaluate_fixed_corey, fit_corey_by_model, unified_corey_params
+from .corey import evaluate_fixed_corey, fit_corey_by_model, summarize_corey_by_horizon, unified_corey_params
 from .endpoint_cubes import (
     apply_correlation,
     check_apply_inputs,
@@ -55,7 +55,8 @@ EXCEL_GRID_COLOR = "#D9D9D9"
 EXCEL_AXIS_COLOR = "#BFBFBF"
 EXCEL_TEXT_COLOR = "#404040"
 PINNED_COLORS = EXCEL_PALETTE
-OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
+OFP_COLUMNS = ("model", "well", "horizon", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
+OFP_HORIZON_COLUMNS = ("horizon", "n_models", "nw", "now", "Swir", "Sor", "krwmax")
 CROSSCHECK_COLUMNS = ("well", "sample", "model_OFP", "Swir_Pc", "Swir_OFP", "diff", "perm_mD", "porosity_pct")
 PETRO_COLUMNS = ("horizon", "n", "a", "b", "r2", "poro_min", "poro_max", "perm_min", "perm_max")
 CUBES_COLUMNS = ("horizon", "endpoint", "x_var", "form", "a", "b", "r2", "n")
@@ -137,6 +138,7 @@ class JFunctionApp:
         self.pinned_trends: list[dict] = []
 
         self.ofp_df: pd.DataFrame | None = None
+        self.ofp_active_df: pd.DataFrame | None = None
         self.ofp_per_model: pd.DataFrame | None = None
         self.ofp_unified = None
 
@@ -500,6 +502,15 @@ class JFunctionApp:
         ttk.Button(top, text="Загрузить ОФП-отчёт (.docx)...", command=self.on_load_ofp).pack(side="left")
         self.ofp_file_label = ttk.Label(top, text="Файл не загружен")
         self.ofp_file_label.pack(side="left", padx=10)
+
+        ttk.Label(top, text="Горизонт:").pack(side="left", padx=(20, 4))
+        self.ofp_horizon_var = tk.StringVar(value="Все")
+        self.ofp_horizon_combo = ttk.Combobox(
+            top, textvariable=self.ofp_horizon_var, state="readonly", width=14, values=["Все"],
+        )
+        self.ofp_horizon_combo.pack(side="left")
+        self.ofp_horizon_combo.bind("<<ComboboxSelected>>", self._on_ofp_horizon_filter)
+
         ttk.Button(top, text="Экспортировать результаты...", command=self.on_export_ofp).pack(side="right")
         ttk.Button(top, text="Экспорт SWOF...", command=self.on_export_swof).pack(side="right", padx=(0, 8))
         ttk.Button(top, text="Экспорт COREYWO...", command=self.on_export_coreywo).pack(side="right", padx=(0, 8))
@@ -574,6 +585,16 @@ class JFunctionApp:
             unified, text="Задать nw, now вручную (ползунками или числом)",
             variable=self.ofp_manual_var, command=self.on_toggle_ofp_manual,
         ).grid(row=len(readonly_rows) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        horizon_frame = ttk.LabelFrame(right, text="Степени Кори по горизонтам", padding=8)
+        horizon_frame.pack(fill="x", pady=(8, 0))
+        self.ofp_horizon_tree = ttk.Treeview(
+            horizon_frame, columns=OFP_HORIZON_COLUMNS, show="headings", height=4
+        )
+        for col in OFP_HORIZON_COLUMNS:
+            self.ofp_horizon_tree.heading(col, text=col)
+            self.ofp_horizon_tree.column(col, width=60, anchor="center")
+        self.ofp_horizon_tree.pack(fill="x")
 
         ofp_columns = OFP_COLUMNS
         tree_frame = ttk.Frame(right)
@@ -1178,18 +1199,40 @@ class JFunctionApp:
             return
 
         try:
-            per_model = fit_corey_by_model(df, group_col="model")
+            per_model_all = fit_corey_by_model(df, group_col="model")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка расчёта", str(exc))
             return
 
         self.ofp_df = df
+        self.ofp_file_label.config(
+            text=f"{Path(path).name}  ({per_model_all['model'].nunique()} моделей, {len(df)} точек)"
+        )
+
+        horizons = sorted(h for h in df["horizon"].dropna().unique() if h) if "horizon" in df.columns else []
+        self.ofp_horizon_combo.config(values=["Все"] + horizons)
+        self.ofp_horizon_var.set("Все")
+        self._update_ofp_horizon_summary(summarize_corey_by_horizon(per_model_all))
+
+        self._on_ofp_horizon_filter()
+
+    def _on_ofp_horizon_filter(self, _event=None) -> None:
+        if self.ofp_df is None:
+            return
+        horizon = self.ofp_horizon_var.get()
+        if horizon == "Все" or "horizon" not in self.ofp_df.columns:
+            self.ofp_active_df = self.ofp_df
+        else:
+            self.ofp_active_df = self.ofp_df[self.ofp_df["horizon"] == horizon]
+
+        try:
+            per_model = fit_corey_by_model(self.ofp_active_df, group_col="model")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Ошибка расчёта", str(exc))
+            return
+
         self.ofp_per_model = per_model
         self.ofp_unified = unified_corey_params(per_model)
-
-        self.ofp_file_label.config(
-            text=f"{Path(path).name}  ({per_model['model'].nunique()} моделей, {len(df)} точек)"
-        )
         self._update_ofp_table(per_model)
 
         self.ofp_manual_var.set(False)
@@ -1200,6 +1243,15 @@ class JFunctionApp:
 
         self._update_ofp_unified(self.ofp_unified)
         self._recompute_ofp_fit()
+
+    def _update_ofp_horizon_summary(self, summary: pd.DataFrame) -> None:
+        self.ofp_horizon_tree.delete(*self.ofp_horizon_tree.get_children())
+        for _, row in summary.iterrows():
+            values = []
+            for col in OFP_HORIZON_COLUMNS:
+                v = row.get(col, "")
+                values.append(f"{v:.4g}" if isinstance(v, float) else v)
+            self.ofp_horizon_tree.insert("", "end", values=values)
 
     def on_toggle_ofp_manual(self) -> None:
         manual = self.ofp_manual_var.get()
@@ -1256,7 +1308,7 @@ class JFunctionApp:
 
     def _recompute_ofp_fit(self) -> None:
         """Считает R²w/R²o по текущим nw, now (автоматическим или введённым вручную) и обновляет график."""
-        if self.ofp_df is None or self.ofp_unified is None:
+        if self.ofp_active_df is None or self.ofp_unified is None:
             return
         try:
             nw = float(self.ofp_nw_var.get())
@@ -1268,10 +1320,10 @@ class JFunctionApp:
             self.ofp_r2o_var.set("-")
             return
 
-        fit = evaluate_fixed_corey(nw, now, self.ofp_df)
+        fit = evaluate_fixed_corey(nw, now, self.ofp_active_df)
         self.ofp_r2w_var.set(f"{fit.r2_w:.4f}" if fit.r2_w == fit.r2_w else "-")
         self.ofp_r2o_var.set(f"{fit.r2_o:.4f}" if fit.r2_o == fit.r2_o else "-")
-        self._update_ofp_plot(self.ofp_df, self.ofp_unified, nw=nw, now=now)
+        self._update_ofp_plot(self.ofp_active_df, self.ofp_unified, nw=nw, now=now)
 
     def _update_ofp_table(self, per_model: pd.DataFrame) -> None:
         self.ofp_tree.delete(*self.ofp_tree.get_children())
@@ -1353,7 +1405,7 @@ class JFunctionApp:
             coeffs_path = out_dir_path / "ofp_corey_coefficients.xlsx"
             plot_path = out_dir_path / "ofp_corey_plot.png"
 
-            self.ofp_df.to_excel(points_path, index=False)
+            self.ofp_active_df.to_excel(points_path, index=False)
             self.ofp_per_model.to_excel(coeffs_path, index=False)
             self.ofp_figure.savefig(plot_path, dpi=200, bbox_inches="tight")
             messagebox.showinfo("Готово", f"Сохранено:\n{points_path}\n{coeffs_path}\n{plot_path}")
