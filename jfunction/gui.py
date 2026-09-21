@@ -1563,11 +1563,42 @@ class JFunctionApp:
                 alpha=0.7, color=color, edgecolor="black" if horizon_filter != "Все" else None, label=label,
             )
 
+        anchors = []
         for _, row in fits.iterrows():
             color = line_color or color_map.get(row["horizon"], "black")
             xx = np.linspace(row["poro_min"], row["poro_max"], 50)
             yy = row["a"] * np.exp(row["b"] * xx)
             self.petro_ax.plot(xx, yy, color=color, linewidth=2)
+
+            x_mid = xx[len(xx) // 2]
+            y_mid = yy[len(yy) // 2]
+            formula_text = f"k={row['a']:.3g}e^{row['b']:+.3g}Кп"
+            anchors.append((y_mid, x_mid, formula_text, color))
+
+        if horizon_filter == "Все":
+            # Ярлыки-выноски: сортируем по значению в середине графика и
+            # раскладываем в столбик, чтобы формулы разных горизонтов не
+            # накладывались друг на друга при пересекающихся трендах.
+            anchors.sort(key=lambda item: item[0], reverse=True)
+            n = len(anchors)
+            for i, (y_mid, x_mid, formula_text, color) in enumerate(anchors):
+                y_frac = 0.95 - i * (0.85 / max(n - 1, 1)) if n > 1 else 0.5
+                self.petro_ax.annotate(
+                    formula_text, xy=(x_mid, y_mid), xycoords="data",
+                    xytext=(1.03, y_frac), textcoords="axes fraction",
+                    fontsize=7, color="black", va="center", ha="left",
+                    arrowprops=dict(arrowstyle="-", color=color, lw=1),
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor=color, alpha=0.35, edgecolor=color),
+                )
+            self.petro_figure.subplots_adjust(right=0.78)
+        else:
+            for y_mid, x_mid, formula_text, color in anchors:
+                self.petro_ax.annotate(
+                    formula_text, xy=(x_mid, y_mid), xytext=(5, 6), textcoords="offset points",
+                    fontsize=7, color="black",
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor=color, alpha=0.35, edgecolor=color),
+                )
+            self.petro_figure.subplots_adjust(right=0.9)
 
         self.petro_ax.set_yscale("log")
         self.petro_ax.set_xlabel("Пористость (открытая), %")
@@ -1575,7 +1606,11 @@ class JFunctionApp:
         title = "k = a·exp(b·Кп) по горизонтам" if horizon_filter == "Все" else f"{horizon_filter}: k = a·exp(b·Кп)"
         self.petro_ax.set_title(title)
         if horizon_filter == "Все":
-            self.petro_ax.legend(fontsize=8)
+            ncol = max(1, min(len(horizons), 4))
+            self.petro_ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=ncol)
+            self.petro_figure.subplots_adjust(bottom=0.24)
+        else:
+            self.petro_figure.subplots_adjust(bottom=0.11)
         self.petro_ax.grid(True, which="both", alpha=0.3)
         self.petro_canvas.draw()
 
