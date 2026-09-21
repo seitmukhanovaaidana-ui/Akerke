@@ -44,11 +44,66 @@ from .swir_crosscheck import crosscheck_swir
 
 ALL = "Все"
 TABLE_COLUMNS = ("well", "sample", "horizon", "Sw", "Pc_lab_MPa", "SWn", "J")
-PINNED_COLORS = ["green", "purple", "brown", "magenta", "gray", "olive", "cyan", "black"]
+# Палитра и цвета сетки/осей - как в стандартной теме диаграмм Excel/Office.
+EXCEL_PALETTE = [
+    "#4472C4", "#ED7D31", "#A5A5A5", "#FFC000", "#5B9BD5",
+    "#70AD47", "#264478", "#9E480E", "#636363", "#997300",
+]
+EXCEL_BLUE = EXCEL_PALETTE[0]
+EXCEL_ORANGE = EXCEL_PALETTE[1]
+EXCEL_GRID_COLOR = "#D9D9D9"
+EXCEL_AXIS_COLOR = "#BFBFBF"
+EXCEL_TEXT_COLOR = "#404040"
+PINNED_COLORS = EXCEL_PALETTE
 OFP_COLUMNS = ("model", "well", "n", "Swir", "Sor", "Swmax", "krwmax", "nw", "r2_w", "now", "r2_o")
 CROSSCHECK_COLUMNS = ("well", "sample", "model_OFP", "Swir_Pc", "Swir_OFP", "diff", "perm_mD", "porosity_pct")
 PETRO_COLUMNS = ("horizon", "n", "a", "b", "r2", "poro_min", "poro_max", "perm_min", "perm_max")
 CUBES_COLUMNS = ("horizon", "endpoint", "x_var", "form", "a", "b", "r2", "n")
+
+
+def style_excel_axes(ax, *, legend=False, legend_kwargs=None) -> None:
+    """
+    Единый вид графиков "как в Excel": белый фон, только горизонтальная
+    светло-серая сетка, без верхней/правой рамки, легенда без рамки.
+    """
+    ax.set_facecolor("white")
+    for spine_name in ("top", "right"):
+        ax.spines[spine_name].set_visible(False)
+    for spine_name in ("left", "bottom"):
+        ax.spines[spine_name].set_color(EXCEL_AXIS_COLOR)
+    ax.tick_params(colors=EXCEL_TEXT_COLOR)
+    ax.xaxis.label.set_color(EXCEL_TEXT_COLOR)
+    ax.yaxis.label.set_color(EXCEL_TEXT_COLOR)
+    ax.title.set_color(EXCEL_TEXT_COLOR)
+    ax.set_axisbelow(True)
+    ax.grid(True, axis="y", which="major", color=EXCEL_GRID_COLOR, linewidth=0.8)
+    if legend:
+        kwargs = {"frameon": False, "fontsize": 8}
+        kwargs.update(legend_kwargs or {})
+        ax.legend(**kwargs)
+
+
+def format_trendline_equation(form: str, a: float, b: float) -> str:
+    """Формула линии тренда в формате подписи Excel (y = ..., по типу тренда)."""
+    if form == "linear":
+        return f"y = {b:.4g}x {'+' if a >= 0 else '-'} {abs(a):.4g}"
+    if form == "log":
+        return f"y = {b:.4g}ln(x) {'+' if a >= 0 else '-'} {abs(a):.4g}"
+    if form == "power":
+        return f"y = {a:.4g}x^{b:.4g}"
+    if form == "exp":
+        return f"y = {a:.4g}e^{b:.4g}x"
+    return ""
+
+
+def excel_formula_box(ax, x, y, text, *, color=EXCEL_ORANGE, fontsize=11, **kwargs) -> None:
+    """Подпись формулы линии тренда в стиле Excel (скруглённый цветной прямоугольник)."""
+    style = dict(
+        fontsize=fontsize, color="black", ha="center", va="center",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor=color, edgecolor="none", alpha=0.95),
+    )
+    style.update(kwargs)
+    ax.text(x, y, text, **style)
 
 
 def _fmt_num(value: float) -> str:
@@ -580,21 +635,23 @@ class JFunctionApp:
         self.rocktype_ax.clear()
         samples = df.drop_duplicates(subset=["well", "sample"]) if "sample" in df.columns else df
 
-        if color_col is not None and color_col in samples.columns:
+        has_groups = color_col is not None and color_col in samples.columns
+        if has_groups:
             for i, (name, sub) in enumerate(samples.groupby(color_col, observed=True)):
                 color = PINNED_COLORS[i % len(PINNED_COLORS)]
                 self.rocktype_ax.scatter(
                     sub["porosity_pct"], sub["perm_mD"], s=20, alpha=0.7, color=color, label=str(name)
                 )
-            self.rocktype_ax.legend(fontsize=8, title="Тип породы", loc="best")
         else:
-            self.rocktype_ax.scatter(samples["porosity_pct"], samples["perm_mD"], s=20, alpha=0.7)
+            self.rocktype_ax.scatter(samples["porosity_pct"], samples["perm_mD"], s=20, alpha=0.7, color=EXCEL_BLUE)
 
         self.rocktype_ax.set_yscale("log")
         self.rocktype_ax.set_xlabel("Пористость, %")
         self.rocktype_ax.set_ylabel("Проницаемость, мД")
         self.rocktype_ax.set_title("Кроссплот k-φ")
-        self.rocktype_ax.grid(True, which="both", alpha=0.3)
+        style_excel_axes(
+            self.rocktype_ax, legend=has_groups, legend_kwargs={"title": "Тип породы", "loc": "best"}
+        )
         self.rocktype_canvas.draw()
 
     def _update_rocktype_jswn_plot(self, df: pd.DataFrame, color_col: str | None = None) -> None:
@@ -620,8 +677,7 @@ class JFunctionApp:
         self.rocktype_jswn_ax.set_xlabel("SWn")
         self.rocktype_jswn_ax.set_ylabel("J(Sw)")
         self.rocktype_jswn_ax.set_title("J(SWn) по группам")
-        self.rocktype_jswn_ax.legend(fontsize=7, loc="best")
-        self.rocktype_jswn_ax.grid(True, alpha=0.3)
+        style_excel_axes(self.rocktype_jswn_ax, legend=True, legend_kwargs={"fontsize": 7, "loc": "best"})
         self.rocktype_jswn_canvas.draw()
 
     def _build_constants_panel(self, parent: ttk.Widget) -> None:
@@ -980,7 +1036,9 @@ class JFunctionApp:
         self.ax.clear()
         self._plot_swn = df["SWn"].to_numpy()
         self._plot_j = df["J"].to_numpy()
-        self.scatter = self.ax.scatter(self._plot_swn, self._plot_j, s=14, alpha=0.6, label="данные")
+        self.scatter = self.ax.scatter(
+            self._plot_swn, self._plot_j, s=14, alpha=0.7, color=EXCEL_BLUE, label="данные"
+        )
         self.hover_annotation = self.ax.annotate(
             "",
             xy=(0, 0),
@@ -993,16 +1051,10 @@ class JFunctionApp:
         self.hover_annotation.set_visible(False)
         swn_grid = np.linspace(max(df["SWn"].min(), 0), df["SWn"].max(), 200)
         if fit is not None:
-            self.ax.plot(swn_grid, fit.predict(swn_grid), color="red", linewidth=2, label="тренд")
-            self.ax.text(
-                0.4,
-                0.7,
-                f"y = {fit.a:.4f}e^{fit.b:.4f}x",
-                transform=self.ax.transAxes,
-                fontsize=15,
-                color="black",
-                ha="center",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="#ED7D31", edgecolor="none", alpha=0.95),
+            self.ax.plot(swn_grid, fit.predict(swn_grid), color=EXCEL_ORANGE, linewidth=2, label="тренд")
+            excel_formula_box(
+                self.ax, 0.4, 0.7, f"y = {fit.a:.4f}e^{fit.b:.4f}x",
+                fontsize=15, transform=self.ax.transAxes,
             )
 
         for i, pinned in enumerate(self.pinned_trends):
@@ -1014,8 +1066,7 @@ class JFunctionApp:
         self.ax.set_xlabel("SWn")
         self.ax.set_ylabel("J(Sw)")
         self.ax.set_title("J(SWn) = a·exp(b·SWn)")
-        self.ax.legend()
-        self.ax.grid(True, alpha=0.3)
+        style_excel_axes(self.ax, legend=True, legend_kwargs={"fontsize": 9})
         self.canvas.draw()
 
     def _on_hover(self, event) -> None:
@@ -1252,15 +1303,25 @@ class JFunctionApp:
             sw_star = np.clip((sw_grid - unified.swir) / (swmax_eff - unified.swir), 0, 1)
             krw_curve = unified.krwmax * np.power(sw_star, nw_val)
             kro_curve = unified.krow_swc * np.power(1 - sw_star, now_val)
-            self.ofp_ax.plot(sw_grid, krw_curve, color="blue", linewidth=2, linestyle="--", label="krw (единая)")
-            self.ofp_ax.plot(sw_grid, kro_curve, color="black", linewidth=2, linestyle="--", label="kro (единая)")
+            self.ofp_ax.plot(sw_grid, krw_curve, color=EXCEL_BLUE, linewidth=2, linestyle="--", label="krw (единая)")
+            self.ofp_ax.plot(sw_grid, kro_curve, color=EXCEL_ORANGE, linewidth=2, linestyle="--", label="kro (единая)")
+
+            i_w = int(len(sw_grid) * 0.65)
+            excel_formula_box(
+                self.ofp_ax, sw_grid[i_w], krw_curve[i_w], f"Krw=(Sw*)^{nw_val:.3f}",
+                color=EXCEL_BLUE, fontsize=9,
+            )
+            i_o = int(len(sw_grid) * 0.3)
+            excel_formula_box(
+                self.ofp_ax, sw_grid[i_o], kro_curve[i_o], f"Krow=(1-Sw*)^{now_val:.3f}",
+                color=EXCEL_ORANGE, fontsize=9,
+            )
 
         self.ofp_ax.set_xlabel("Sw")
         self.ofp_ax.set_ylabel("Относительная проницаемость")
         self.ofp_ax.set_title("ОФП: krw/krow(Sw) и единая кривая Кори")
         self.ofp_ax.set_ylim(bottom=0)
-        self.ofp_ax.legend(fontsize=8)
-        self.ofp_ax.grid(True, alpha=0.3)
+        style_excel_axes(self.ofp_ax, legend=True)
         self.ofp_canvas.draw()
 
     def on_export_ofp(self) -> None:
@@ -1409,15 +1470,17 @@ class JFunctionApp:
                 )
             lo = min(result["Swir_Pc"].min(), result["Swir_OFP"].min()) - 0.02
             hi = max(result["Swir_Pc"].max(), result["Swir_OFP"].max()) + 0.02
-            self.crosscheck_ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.5, label="Swir(Pc) = Swir(ОФП)")
+            self.crosscheck_ax.plot(
+                [lo, hi], [lo, hi], color=EXCEL_ORANGE, linestyle="--", linewidth=1.5,
+                label="Swir(Pc) = Swir(ОФП)",
+            )
             self.crosscheck_ax.set_xlim(lo, hi)
             self.crosscheck_ax.set_ylim(lo, hi)
-            self.crosscheck_ax.legend(fontsize=8)
 
         self.crosscheck_ax.set_xlabel("Swir по капилляриметрии (J-функция)")
         self.crosscheck_ax.set_ylabel("Swir по ОФП")
         self.crosscheck_ax.set_title("Сверка Swir по общим образцам")
-        self.crosscheck_ax.grid(True, alpha=0.3)
+        style_excel_axes(self.crosscheck_ax, legend=not result.empty)
         self.crosscheck_canvas.draw()
 
     def on_export_crosscheck(self) -> None:
@@ -1545,8 +1608,8 @@ class JFunctionApp:
 
         horizons = list(fits["horizon"]) if not fits.empty else []
         if horizon_filter != "Все":
-            color_map = {h: "steelblue" for h in horizons}
-            line_color = "red"
+            color_map = {h: EXCEL_BLUE for h in horizons}
+            line_color = EXCEL_ORANGE
         else:
             color_map = {h: PINNED_COLORS[i % len(PINNED_COLORS)] for i, h in enumerate(horizons)}
             line_color = None
@@ -1560,7 +1623,7 @@ class JFunctionApp:
             label = f"{horizon} (n={len(sub)})" if horizon in color_map else None
             self.petro_ax.scatter(
                 sub["poro_open"], sub["perm_gas"], s=20 if horizon_filter == "Все" else 40,
-                alpha=0.7, color=color, edgecolor="black" if horizon_filter != "Все" else None, label=label,
+                alpha=0.7, color=color, edgecolor="white" if horizon_filter != "Все" else None, label=label,
             )
 
         anchors = []
@@ -1607,11 +1670,14 @@ class JFunctionApp:
         self.petro_ax.set_title(title)
         if horizon_filter == "Все":
             ncol = max(1, min(len(horizons), 4))
-            self.petro_ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=ncol)
+            style_excel_axes(
+                self.petro_ax, legend=True,
+                legend_kwargs={"loc": "upper center", "bbox_to_anchor": (0.5, -0.12), "ncol": ncol},
+            )
             self.petro_figure.subplots_adjust(bottom=0.24)
         else:
+            style_excel_axes(self.petro_ax)
             self.petro_figure.subplots_adjust(bottom=0.11)
-        self.petro_ax.grid(True, which="both", alpha=0.3)
         self.petro_canvas.draw()
 
     def on_export_petro(self) -> None:
@@ -1730,19 +1796,25 @@ class JFunctionApp:
         sub = self.cubes_active_df[self.cubes_active_df["horizon"] == corr.horizon].dropna(
             subset=[corr.x_var, corr.endpoint]
         )
-        self.cubes_ax.scatter(sub[corr.x_var], sub[corr.endpoint], s=40, color="steelblue", edgecolor="black")
+        self.cubes_ax.scatter(sub[corr.x_var], sub[corr.endpoint], s=40, color=EXCEL_BLUE, edgecolor="white")
 
         xx = np.linspace(corr.x_min, corr.x_max, 100)
         yy = corr.predict(xx)
-        self.cubes_ax.plot(xx, yy, color="red", linewidth=2)
+        self.cubes_ax.plot(xx, yy, color=EXCEL_ORANGE, linewidth=2)
+
+        i_mid = len(xx) // 2
+        equation = format_trendline_equation(corr.form, corr.a, corr.b)
+        excel_formula_box(
+            self.cubes_ax, xx[i_mid], yy[i_mid], f"{equation}\nR²={corr.r2:.4f}", fontsize=9,
+        )
 
         x_label = "Пористость, %" if corr.x_var == "porosity_pct" else "Проницаемость, мД"
         self.cubes_ax.set_xlabel(x_label)
         self.cubes_ax.set_ylabel(corr.endpoint)
-        self.cubes_ax.set_title(f"{corr.horizon}: {corr.endpoint} = f(x), {corr.form}, R²={corr.r2:.3f}")
+        self.cubes_ax.set_title(f"{corr.horizon}: {corr.endpoint} = f(x), {corr.form}")
         if corr.x_var == "perm_mD":
             self.cubes_ax.set_xscale("log")
-        self.cubes_ax.grid(True, alpha=0.3)
+        style_excel_axes(self.cubes_ax)
         self.cubes_canvas.draw()
 
     def on_apply_cube(self) -> None:
