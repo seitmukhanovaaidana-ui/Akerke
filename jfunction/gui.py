@@ -143,6 +143,7 @@ class JFunctionApp:
         self.crosscheck_result: pd.DataFrame | None = None
 
         self.petro_df: pd.DataFrame | None = None
+        self.petro_active_df: pd.DataFrame | None = None
         self.petro_fits: pd.DataFrame | None = None
 
         self.cubes_df: pd.DataFrame | None = None
@@ -267,6 +268,13 @@ class JFunctionApp:
         ).pack(side="left")
         self.petro_file_label = ttk.Label(top, text="Файл не загружен")
         self.petro_file_label.pack(side="left", padx=10)
+
+        ttk.Label(top, text="Группировка:").pack(side="left", padx=(20, 4))
+        self.petro_grouping_var = tk.StringVar(value="По горизонту")
+        ttk.Combobox(
+            top, textvariable=self.petro_grouping_var, state="readonly", width=13,
+            values=["По горизонту", "Мел/Юра"],
+        ).pack(side="left")
 
         ttk.Label(top, text="Мин. образцов на горизонт:").pack(side="left", padx=(20, 4))
         self.petro_min_samples_var = tk.StringVar(value="5")
@@ -1543,7 +1551,12 @@ class JFunctionApp:
             messagebox.showerror("Ошибка", "«Мин. образцов на горизонт» должно быть целым числом.")
             return
 
-        fits = fit_poro_perm_by_horizon(self.petro_df, min_samples=min_samples)
+        if self.petro_grouping_var.get() == "Мел/Юра":
+            self.petro_active_df = group_by_formation(self.petro_df)
+        else:
+            self.petro_active_df = self.petro_df
+
+        fits = fit_poro_perm_by_horizon(self.petro_active_df, min_samples=min_samples)
         self.petro_fits = fits
         self._update_petro_table(fits)
 
@@ -1551,7 +1564,19 @@ class JFunctionApp:
         self.petro_horizon_combo.config(values=["Все"] + horizons)
         self.petro_horizon_var.set("Все")
         self._set_petro_formula(None)
-        self._update_petro_plot(self.petro_df, fits, horizon_filter="Все")
+        self._update_petro_plot(self.petro_active_df, fits, horizon_filter="Все")
+
+        if not fits.empty:
+            low_r2 = fits[fits["r2"] < 0.3]
+            if not low_r2.empty:
+                messagebox.showwarning(
+                    "Слабая зависимость",
+                    "Для групп " + ", ".join(low_r2["horizon"]) + " зависимость k(Кп) "
+                    "почти не прослеживается (R² < 0.3) - разброс проницаемости при "
+                    "одной и той же пористости слишком велик. Такому тренду доверять "
+                    "не стоит, особенно если он получен объединением разных горизонтов "
+                    "(«Мел/Юра»); по возможности используйте разбивку по горизонту.",
+                )
 
     def _update_petro_table(self, fits: pd.DataFrame) -> None:
         self.petro_tree.delete(*self.petro_tree.get_children())
@@ -1572,14 +1597,14 @@ class JFunctionApp:
         idx = self.petro_tree.index(sel[0])
         row = self.petro_fits.iloc[idx]
         self.petro_horizon_var.set(row["horizon"])
-        self._update_petro_plot(self.petro_df, self.petro_fits, horizon_filter=row["horizon"])
+        self._update_petro_plot(self.petro_active_df, self.petro_fits, horizon_filter=row["horizon"])
         self._set_petro_formula(row)
 
     def _on_petro_filter_change(self, _event=None) -> None:
-        if self.petro_df is None or self.petro_fits is None:
+        if self.petro_active_df is None or self.petro_fits is None:
             return
         horizon = self.petro_horizon_var.get()
-        self._update_petro_plot(self.petro_df, self.petro_fits, horizon_filter=horizon)
+        self._update_petro_plot(self.petro_active_df, self.petro_fits, horizon_filter=horizon)
         if horizon == "Все":
             self._set_petro_formula(None)
         else:
@@ -1641,7 +1666,7 @@ class JFunctionApp:
 
             x_mid = xx[len(xx) // 2]
             y_mid = yy[len(yy) // 2]
-            formula_text = f"k={row['a']:.3g}e^{row['b']:+.3g}Кп"
+            formula_text = f"k={row['a']:.3g}e^{row['b']:+.3g}Кп, R²={row['r2']:.2f}"
             anchors.append((y_mid, x_mid, formula_text, color, yy))
 
         if horizon_filter == "Все":
@@ -1659,7 +1684,7 @@ class JFunctionApp:
                     arrowprops=dict(arrowstyle="-", color=color, lw=1),
                     bbox=dict(boxstyle="round,pad=0.25", facecolor=color, alpha=0.35, edgecolor=color),
                 )
-            self.petro_figure.subplots_adjust(right=0.78)
+            self.petro_figure.subplots_adjust(right=0.7)
         else:
             # Одна линия тренда - подпись в свободном верхнем углу графика,
             # а не поверх самой линии.
