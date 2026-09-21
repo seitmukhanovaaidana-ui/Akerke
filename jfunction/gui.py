@@ -106,6 +106,20 @@ def excel_formula_box(ax, x, y, text, *, color=EXCEL_ORANGE, fontsize=11, **kwar
     ax.text(x, y, text, **style)
 
 
+def excel_formula_corner(ax, yy, text, *, color=EXCEL_ORANGE, fontsize=9) -> None:
+    """
+    Подпись формулы для ОДНОЙ линии тренда - в свободном верхнем углу графика,
+    а не поверх самой линии: слева, если линия растёт (тогда левый край
+    внизу, а не под подписью), справа, если убывает.
+    """
+    rising = yy[-1] >= yy[0]
+    x_frac, ha = (0.04, "left") if rising else (0.96, "right")
+    excel_formula_box(
+        ax, x_frac, 0.95, text, color=color, fontsize=fontsize,
+        transform=ax.transAxes, ha=ha, va="top",
+    )
+
+
 def _fmt_num(value: float) -> str:
     """Целые числа показываем без ".0" (30, а не 30.0) - как в исходном Excel."""
     return str(int(value)) if float(value).is_integer() else str(value)
@@ -1306,22 +1320,14 @@ class JFunctionApp:
             self.ofp_ax.plot(sw_grid, krw_curve, color=EXCEL_BLUE, linewidth=2, linestyle="--", label="krw (единая)")
             self.ofp_ax.plot(sw_grid, kro_curve, color=EXCEL_ORANGE, linewidth=2, linestyle="--", label="kro (единая)")
 
-            i_w = int(len(sw_grid) * 0.65)
-            excel_formula_box(
-                self.ofp_ax, sw_grid[i_w], krw_curve[i_w], f"Krw=(Sw*)^{nw_val:.3f}",
-                color=EXCEL_BLUE, fontsize=9,
-            )
-            i_o = int(len(sw_grid) * 0.3)
-            excel_formula_box(
-                self.ofp_ax, sw_grid[i_o], kro_curve[i_o], f"Krow=(1-Sw*)^{now_val:.3f}",
-                color=EXCEL_ORANGE, fontsize=9,
-            )
+            excel_formula_corner(self.ofp_ax, krw_curve, f"Krw=(Sw*)^{nw_val:.3f}", color=EXCEL_BLUE)
+            excel_formula_corner(self.ofp_ax, kro_curve, f"Krow=(1-Sw*)^{now_val:.3f}", color=EXCEL_ORANGE)
 
         self.ofp_ax.set_xlabel("Sw")
         self.ofp_ax.set_ylabel("Относительная проницаемость")
         self.ofp_ax.set_title("ОФП: krw/krow(Sw) и единая кривая Кори")
         self.ofp_ax.set_ylim(bottom=0)
-        style_excel_axes(self.ofp_ax, legend=True)
+        style_excel_axes(self.ofp_ax, legend=True, legend_kwargs={"loc": "lower center"})
         self.ofp_canvas.draw()
 
     def on_export_ofp(self) -> None:
@@ -1636,7 +1642,7 @@ class JFunctionApp:
             x_mid = xx[len(xx) // 2]
             y_mid = yy[len(yy) // 2]
             formula_text = f"k={row['a']:.3g}e^{row['b']:+.3g}Кп"
-            anchors.append((y_mid, x_mid, formula_text, color))
+            anchors.append((y_mid, x_mid, formula_text, color, yy))
 
         if horizon_filter == "Все":
             # Ярлыки-выноски: сортируем по значению в середине графика и
@@ -1644,7 +1650,7 @@ class JFunctionApp:
             # накладывались друг на друга при пересекающихся трендах.
             anchors.sort(key=lambda item: item[0], reverse=True)
             n = len(anchors)
-            for i, (y_mid, x_mid, formula_text, color) in enumerate(anchors):
+            for i, (y_mid, x_mid, formula_text, color, _yy) in enumerate(anchors):
                 y_frac = 0.95 - i * (0.85 / max(n - 1, 1)) if n > 1 else 0.5
                 self.petro_ax.annotate(
                     formula_text, xy=(x_mid, y_mid), xycoords="data",
@@ -1655,12 +1661,10 @@ class JFunctionApp:
                 )
             self.petro_figure.subplots_adjust(right=0.78)
         else:
-            for y_mid, x_mid, formula_text, color in anchors:
-                self.petro_ax.annotate(
-                    formula_text, xy=(x_mid, y_mid), xytext=(5, 6), textcoords="offset points",
-                    fontsize=7, color="black",
-                    bbox=dict(boxstyle="round,pad=0.25", facecolor=color, alpha=0.35, edgecolor=color),
-                )
+            # Одна линия тренда - подпись в свободном верхнем углу графика,
+            # а не поверх самой линии.
+            for _y_mid, _x_mid, formula_text, color, yy in anchors:
+                excel_formula_corner(self.petro_ax, yy, formula_text, color=color, fontsize=9)
             self.petro_figure.subplots_adjust(right=0.9)
 
         self.petro_ax.set_yscale("log")
@@ -1802,11 +1806,8 @@ class JFunctionApp:
         yy = corr.predict(xx)
         self.cubes_ax.plot(xx, yy, color=EXCEL_ORANGE, linewidth=2)
 
-        i_mid = len(xx) // 2
         equation = format_trendline_equation(corr.form, corr.a, corr.b)
-        excel_formula_box(
-            self.cubes_ax, xx[i_mid], yy[i_mid], f"{equation}\nR²={corr.r2:.4f}", fontsize=9,
-        )
+        excel_formula_corner(self.cubes_ax, yy, f"{equation}\nR²={corr.r2:.4f}", fontsize=9)
 
         x_label = "Пористость, %" if corr.x_var == "porosity_pct" else "Проницаемость, мД"
         self.cubes_ax.set_xlabel(x_label)
