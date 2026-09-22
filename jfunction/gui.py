@@ -39,7 +39,7 @@ from .endpoint_cubes import (
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
-from .petro import fit_poro_perm_by_horizon, load_core_petro_xlsx
+from .petro import fit_poro_perm_by_horizon, fit_poro_perm_single, load_core_petro_xlsx
 from .report import save_results
 from .rocktype import classify_by_permeability
 from .scal_export import format_coreywo, format_swof
@@ -357,6 +357,48 @@ class JFunctionApp:
         ttk.Button(
             formula_frame, text="Скопировать формулу", command=self.on_copy_petro_formula
         ).pack(anchor="w")
+
+        custom_frame = ttk.LabelFrame(
+            right, text="Произвольная комбинация горизонтов/стратиграфии", padding=8
+        )
+        custom_frame.pack(fill="x", pady=(8, 0))
+        ttk.Label(
+            custom_frame,
+            text="Выберите несколько значений (Ctrl+клик) в одном или обоих списках -\n"
+                 "они объединятся в одну группу (например, Ю-II + Ю-VI, или мел + Ю-II).",
+            justify="left", wraplength=320,
+        ).pack(anchor="w", pady=(0, 4))
+
+        lists_row = ttk.Frame(custom_frame)
+        lists_row.pack(fill="x")
+
+        horizon_col = ttk.Frame(lists_row)
+        horizon_col.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        ttk.Label(horizon_col, text="Горизонт").pack(anchor="w")
+        hz_scroll = ttk.Scrollbar(horizon_col, orient="vertical")
+        self.petro_horizon_listbox = tk.Listbox(
+            horizon_col, selectmode="extended", height=6, exportselection=False,
+            yscrollcommand=hz_scroll.set,
+        )
+        hz_scroll.config(command=self.petro_horizon_listbox.yview)
+        self.petro_horizon_listbox.pack(side="left", fill="both", expand=True)
+        hz_scroll.pack(side="left", fill="y")
+
+        strat_col = ttk.Frame(lists_row)
+        strat_col.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        ttk.Label(strat_col, text="Стратиграфия").pack(anchor="w")
+        st_scroll = ttk.Scrollbar(strat_col, orient="vertical")
+        self.petro_strat_listbox = tk.Listbox(
+            strat_col, selectmode="extended", height=6, exportselection=False,
+            yscrollcommand=st_scroll.set,
+        )
+        st_scroll.config(command=self.petro_strat_listbox.yview)
+        self.petro_strat_listbox.pack(side="left", fill="both", expand=True)
+        st_scroll.pack(side="left", fill="y")
+
+        ttk.Button(
+            custom_frame, text="Показать выбранное вместе", command=self.on_show_petro_custom_group,
+        ).pack(anchor="w", pady=(6, 0))
 
     def _build_cubes_tab(self, parent: ttk.Widget) -> None:
         """Кубы концевых точек: корреляция Swir/Sor/krwmax от Кп/k по горизонтам + применение к массиву."""
@@ -1609,6 +1651,16 @@ class JFunctionApp:
         self.petro_file_label.config(
             text=f"{Path(path).name}  ({len(df)} образцов, {df['horizon'].nunique()} горизонтов)"
         )
+
+        self.petro_horizon_listbox.delete(0, "end")
+        for h in sorted(df["horizon"].dropna().unique()):
+            self.petro_horizon_listbox.insert("end", h)
+
+        self.petro_strat_listbox.delete(0, "end")
+        if "strat" in df.columns:
+            for s in sorted(df["strat"].dropna().unique()):
+                self.petro_strat_listbox.insert("end", s)
+
         self.on_run_petro()
 
     def on_run_petro(self) -> None:
@@ -1699,6 +1751,45 @@ class JFunctionApp:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(expr)
+
+    def on_show_petro_custom_group(self) -> None:
+        """Объединяет выбранные горизонты и/или стратиграфические единицы в одну
+        группу и строит для неё k=a*exp(b*Кп), независимо от таблицы по горизонтам."""
+        if self.petro_df is None:
+            messagebox.showwarning("Нет данных", "Сначала загрузите петрофизику керна.")
+            return
+
+        horizons = [self.petro_horizon_listbox.get(i) for i in self.petro_horizon_listbox.curselection()]
+        strats = [self.petro_strat_listbox.get(i) for i in self.petro_strat_listbox.curselection()]
+        if not horizons and not strats:
+            messagebox.showwarning(
+                "Ничего не выбрано", "Выберите хотя бы один горизонт или стратиграфическую единицу."
+            )
+            return
+
+        mask = pd.Series(False, index=self.petro_df.index)
+        if horizons:
+            mask |= self.petro_df["horizon"].isin(horizons)
+        if strats and "strat" in self.petro_df.columns:
+            mask |= self.petro_df["strat"].isin(strats)
+        subset = self.petro_df[mask]
+
+        label = " + ".join(horizons + [f"страт. {s}" for s in strats])
+        fit_row = fit_poro_perm_single(subset, label=label, min_samples=3)
+        if fit_row is None:
+            messagebox.showwarning(
+                "Мало данных",
+                f"В выбранной комбинации {len(subset)} обр., но с пористостью и "
+                "проницаемостью сразу - меньше 3. Добавьте ещё горизонтов/страт. единиц.",
+            )
+            return
+
+        relabeled = subset.copy()
+        relabeled["horizon"] = label
+        fits_df = pd.DataFrame([fit_row])
+
+        self._update_petro_plot(relabeled, fits_df, horizon_filter=label)
+        self._set_petro_formula(fit_row)
 
     def _update_petro_plot(self, df: pd.DataFrame, fits: pd.DataFrame, horizon_filter: str = "Все") -> None:
         self.petro_ax.clear()

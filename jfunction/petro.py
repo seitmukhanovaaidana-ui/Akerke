@@ -103,6 +103,59 @@ class PoroPermFit:
         return self.a * np.exp(self.b * np.asarray(poro_pct, dtype=float))
 
 
+def _fit_poro_perm(x: np.ndarray, y_perm: np.ndarray) -> tuple[float, float, float]:
+    """МНК k=a*exp(b*Кп) по ln(k) от Кп. Возвращает (a, b, r2)."""
+    y = np.log(y_perm)
+    b, ln_a = np.polyfit(x, y, 1)
+    a = float(np.exp(ln_a))
+    pred = ln_a + b * x
+    ss_res = np.sum((y - pred) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+    return a, float(b), r2
+
+
+def fit_poro_perm_single(
+    df: pd.DataFrame,
+    label: str,
+    poro_col: str = "poro_open",
+    perm_col: str = "perm_gas",
+    min_samples: int = 3,
+) -> dict | None:
+    """
+    Считает k = a*exp(b*Кп) для ПРОИЗВОЛЬНОГО, заранее отфильтрованного
+    подмножества образцов - например, нескольких горизонтов и/или
+    стратиграфических единиц, объединённых пользователем вручную (см.
+    "Произвольная комбинация горизонтов/стратиграфии" во вкладке
+    "Петрофизика по горизонтам"). То же самое, что одна строка
+    fit_poro_perm_by_horizon(), но без группировки по столбцу "horizon" -
+    вызывающий код сам решает, что попадает в df, а label - это просто
+    подпись для отображения (например, "Ю-II + Ю-VI").
+
+    Возвращает None, если после отбраковки пустых/неположительных значений
+    осталось меньше min_samples точек.
+    """
+    sub = df.dropna(subset=[poro_col, perm_col])
+    sub = sub[sub[perm_col] > 0]
+    if len(sub) < min_samples:
+        return None
+
+    x = sub[poro_col].to_numpy()
+    a, b, r2 = _fit_poro_perm(x, sub[perm_col].to_numpy())
+
+    return {
+        "horizon": label,
+        "n": len(sub),
+        "a": a,
+        "b": b,
+        "r2": r2,
+        "poro_min": float(sub[poro_col].min()),
+        "poro_max": float(sub[poro_col].max()),
+        "perm_min": float(sub[perm_col].min()),
+        "perm_max": float(sub[perm_col].max()),
+    }
+
+
 def fit_poro_perm_by_horizon(
     df: pd.DataFrame,
     poro_col: str = "poro_open",
@@ -125,20 +178,14 @@ def fit_poro_perm_by_horizon(
             continue
 
         x = sub[poro_col].to_numpy()
-        y = np.log(sub[perm_col].to_numpy())
-        b, ln_a = np.polyfit(x, y, 1)
-        a = float(np.exp(ln_a))
-        pred = ln_a + b * x
-        ss_res = np.sum((y - pred) ** 2)
-        ss_tot = np.sum((y - y.mean()) ** 2)
-        r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+        a, b, r2 = _fit_poro_perm(x, sub[perm_col].to_numpy())
 
         rows.append(
             {
                 "horizon": horizon,
                 "n": len(sub),
                 "a": a,
-                "b": float(b),
+                "b": b,
                 "r2": r2,
                 "poro_min": float(sub[poro_col].min()),
                 "poro_max": float(sub[poro_col].max()),

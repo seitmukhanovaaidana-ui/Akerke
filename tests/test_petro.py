@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jfunction.petro import fit_poro_perm_by_horizon
+from jfunction.petro import fit_poro_perm_by_horizon, fit_poro_perm_single
 
 
 def _synthetic_horizon(horizon, n, a, b, seed):
@@ -44,3 +44,29 @@ def test_horizon_below_min_samples_excluded():
     fits = fit_poro_perm_by_horizon(df, min_samples=5)
 
     assert "Rare" not in set(fits["horizon"])
+
+
+def test_fit_poro_perm_single_combines_arbitrary_subset():
+    """Произвольная комбинация нескольких горизонтов - как один пользовательский набор."""
+    df = pd.concat(
+        [
+            _synthetic_horizon("Ю-II", 6, 0.5, 0.15, seed=1),
+            _synthetic_horizon("Ю-VI", 6, 0.5, 0.15, seed=2),
+            _synthetic_horizon("Ю-III", 6, 5.0, 0.05, seed=3),
+        ],
+        ignore_index=True,
+    )
+    combined = df[df["horizon"].isin(["Ю-II", "Ю-VI"])]
+
+    fit = fit_poro_perm_single(combined, label="Ю-II + Ю-VI")
+
+    assert fit is not None
+    assert fit["horizon"] == "Ю-II + Ю-VI"
+    assert fit["n"] == 12
+    assert fit["a"] == pytest.approx(0.5, abs=1e-2)
+    assert fit["b"] == pytest.approx(0.15, abs=1e-2)
+
+
+def test_fit_poro_perm_single_none_below_min_samples():
+    df = _synthetic_horizon("Ю-II", 2, 0.5, 0.15, seed=1)
+    assert fit_poro_perm_single(df, label="Ю-II", min_samples=3) is None
