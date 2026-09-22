@@ -39,7 +39,13 @@ from .endpoint_cubes import (
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
-from .petro import fit_poro_perm_by_horizon, fit_poro_perm_single, group_by_strat, load_core_petro_xlsx
+from .petro import (
+    combine_small_formations,
+    fit_poro_perm_by_horizon,
+    fit_poro_perm_single,
+    group_by_strat,
+    load_core_petro_xlsx,
+)
 from .report import save_results
 from .rocktype import classify_by_permeability
 from .scal_export import format_coreywo, format_swof
@@ -1682,7 +1688,11 @@ class JFunctionApp:
             else:
                 self.petro_active_df = group_by_formation(self.petro_df)
         else:
-            self.petro_active_df = self.petro_df
+            # Отдельные меловые горизонты обычно слишком малочисленны
+            # (3-4 образца - ниже порога), поэтому даже в режиме "По
+            # горизонту" их объединяют в одну группу "мел", а юрские
+            # горизонты остаются по отдельности.
+            self.petro_active_df = combine_small_formations(self.petro_df)
 
         fits = fit_poro_perm_by_horizon(self.petro_active_df, min_samples=min_samples)
         self.petro_fits = fits
@@ -1848,7 +1858,6 @@ class JFunctionApp:
                     formula_text, xy=(x_mid, y_mid), xycoords="data",
                     xytext=(1.03, y_frac), textcoords="axes fraction",
                     fontsize=7, color="black", va="center", ha="left",
-                    arrowprops=dict(arrowstyle="-", color=color, lw=1),
                     bbox=dict(boxstyle="round,pad=0.25", facecolor=color, alpha=0.35, edgecolor=color),
                 )
             self.petro_figure.subplots_adjust(right=0.7)

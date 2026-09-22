@@ -122,6 +122,33 @@ def group_by_strat(df: pd.DataFrame, strat_col: str = "strat", horizon_col: str 
     return out[normalized.isin(["мел", "юра"])]
 
 
+def combine_small_formations(
+    df: pd.DataFrame,
+    formations: tuple[str, ...] = ("мел",),
+    strat_col: str = "strat",
+    horizon_col: str = "horizon",
+) -> pd.DataFrame:
+    """
+    Возвращает копию df, где для строк с указанной стратиграфией
+    (по умолчанию только "мел") название горизонта заменяется на саму
+    стратиграфию - то есть все меловые горизонты объединяются в одну
+    группу "мел", а остальные строки (юрские горизонты) остаются
+    по отдельности, как есть.
+
+    Нужно для режима "По горизонту": отдельные меловые горизонты в этом
+    отчёте по 3-4 образца - меньше порога "Мин. образцов на горизонт" -
+    и по отдельности не попадают ни в таблицу, ни на график, хотя вместе
+    их достаточно для тренда.
+    """
+    if strat_col not in df.columns:
+        return df
+    normalized = df[strat_col].astype(str).str.strip().str.lower()
+    mask = normalized.isin(formations)
+    out = df.copy()
+    out.loc[mask, horizon_col] = normalized[mask]
+    return out
+
+
 def _fit_poro_perm(x: np.ndarray, y_perm: np.ndarray) -> tuple[float, float, float]:
     """МНК k=a*exp(b*Кп) по ln(k) от Кп. Возвращает (a, b, r2)."""
     y = np.log(y_perm)

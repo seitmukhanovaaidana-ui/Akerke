@@ -4,7 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jfunction.petro import fit_poro_perm_by_horizon, fit_poro_perm_single, group_by_strat
+from jfunction.petro import (
+    combine_small_formations,
+    fit_poro_perm_by_horizon,
+    fit_poro_perm_single,
+    group_by_strat,
+)
 
 
 def _synthetic_horizon(horizon, n, a, b, seed):
@@ -112,3 +117,42 @@ def test_group_by_strat_combines_enough_samples_for_fit():
 
     assert list(fits["horizon"]) == ["мел"]
     assert fits.iloc[0]["n"] == 8
+
+
+def test_combine_small_formations_merges_only_requested_formation():
+    df = pd.DataFrame(
+        {
+            "horizon": ["I альбский", "K1al2-1", "Ю-II", "Ю-II", "Ю-VI"],
+            "strat": ["мел", "мел", "юра", "юра", "юра"],
+            "poro_open": [20, 21, 22, 23, 24],
+            "perm_gas": [1, 2, 3, 4, 5],
+        }
+    )
+
+    combined = combine_small_formations(df, formations=("мел",))
+
+    assert list(combined["horizon"]) == ["мел", "мел", "Ю-II", "Ю-II", "Ю-VI"]
+
+
+def test_combine_small_formations_lets_small_mel_group_pass_threshold():
+    df = pd.concat(
+        [
+            _synthetic_horizon("I альбский", 4, 0.3, 0.1, seed=10),
+            _synthetic_horizon("K1al2-1", 4, 0.3, 0.1, seed=11),
+            _synthetic_horizon("Ю-II", 14, 0.5, 0.15, seed=1),
+        ],
+        ignore_index=True,
+    )
+    df["strat"] = ["мел"] * 8 + ["юра"] * 14
+
+    combined = combine_small_formations(df)
+    fits = fit_poro_perm_by_horizon(combined, min_samples=5)
+
+    assert set(fits["horizon"]) == {"мел", "Ю-II"}
+    assert fits.loc[fits["horizon"] == "мел", "n"].iloc[0] == 8
+
+
+def test_combine_small_formations_without_strat_column_is_noop():
+    df = pd.DataFrame({"horizon": ["Ю-II"], "poro_open": [20], "perm_gas": [1]})
+    combined = combine_small_formations(df)
+    assert list(combined["horizon"]) == ["Ю-II"]
