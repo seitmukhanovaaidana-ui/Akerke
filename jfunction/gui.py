@@ -25,8 +25,10 @@ from matplotlib.figure import Figure
 from .calc import JFunctionConstants, add_derived_columns
 from .corey import evaluate_fixed_corey, fit_corey_by_model, summarize_corey_by_horizon, unified_corey_params
 from .endpoint_cubes import (
+    FORM_LABELS,
     apply_correlation,
     check_apply_inputs,
+    fit_all_forms,
     fit_endpoint_cubes,
     group_by_formation,
     load_endpoint_summary_docx,
@@ -85,7 +87,7 @@ def style_excel_axes(ax, *, legend=False, legend_kwargs=None) -> None:
         ax.legend(**kwargs)
 
 
-def format_trendline_equation(form: str, a: float, b: float) -> str:
+def format_trendline_equation(form: str, a: float, b: float, c: float = 0.0) -> str:
     """Формула линии тренда в формате подписи Excel (y = ..., по типу тренда)."""
     if form == "linear":
         return f"y = {b:.4g}x {'+' if a >= 0 else '-'} {abs(a):.4g}"
@@ -95,6 +97,11 @@ def format_trendline_equation(form: str, a: float, b: float) -> str:
         return f"y = {a:.4g}x^{b:.4g}"
     if form == "exp":
         return f"y = {a:.4g}e^{b:.4g}x"
+    if form == "poly2":
+        return (
+            f"y = {c:.4g}x² {'+' if b >= 0 else '-'} {abs(b):.4g}x "
+            f"{'+' if a >= 0 else '-'} {abs(a):.4g}"
+        )
     return ""
 
 
@@ -153,6 +160,9 @@ class JFunctionApp:
         self.cubes_active_df: pd.DataFrame | None = None
         self.cubes_fits: list = []
         self.cubes_selected: int | None = None
+        self.cubes_form_options: dict = {}
+        self._cubes_form_label_map: dict = {}
+        self.cubes_display_corr = None
         self._cubes_last_input: list | None = None
         self._cubes_last_result = None
 
@@ -410,6 +420,16 @@ class JFunctionApp:
         self.cubes_tree.tag_configure("qc_ok", background="")
         self.cubes_tree.tag_configure("qc_warning", background="#fff3cd")
         self.cubes_tree.tag_configure("qc_bad", background="#f8d7da")
+
+        form_row = ttk.Frame(right)
+        form_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(form_row, text="Форма тренда:").pack(side="left")
+        self.cubes_form_var = tk.StringVar(value="")
+        self.cubes_form_combo = ttk.Combobox(
+            form_row, textvariable=self.cubes_form_var, state="readonly", width=34, values=[],
+        )
+        self.cubes_form_combo.pack(side="left", padx=(6, 0))
+        self.cubes_form_combo.bind("<<ComboboxSelected>>", self._on_cubes_form_change)
 
         self.cubes_qc_var = tk.StringVar(value="")
         self.cubes_qc_label = ttk.Label(right, textvariable=self.cubes_qc_var, wraplength=320, justify="left")
@@ -1853,6 +1873,10 @@ class JFunctionApp:
         self.cubes_fits = fit_endpoint_cubes(self.cubes_active_df, min_samples=min_samples)
         self._update_cubes_table()
         self.cubes_selected = None
+        self.cubes_form_options = {}
+        self.cubes_display_corr = None
+        self.cubes_form_combo.config(values=[])
+        self.cubes_form_var.set("")
         self._cubes_last_input = None
         self._cubes_last_result = None
         self.cubes_output_var.set("")
@@ -1887,6 +1911,40 @@ class JFunctionApp:
         idx = self.cubes_tree.index(sel[0])
         self.cubes_selected = idx
         corr = self.cubes_fits[idx]
+        self._refresh_cubes_form_options(corr)
+
+    def _cubes_form_label(self, form: str, corr, auto: bool) -> str:
+        r2_text = f"{corr.r2:.3f}" if corr.r2 == corr.r2 else "-"
+        suffix = " - авто (лучшая по R²)" if auto else ""
+        return f"{FORM_LABELS.get(form, form)} (R²={r2_text}){suffix}"
+
+    def _refresh_cubes_form_options(self, corr) -> None:
+        """Считает ВСЕ формы (linear/log/power/exp/poly2) для текущей строки и
+        заполняет выпадающий список "Форма тренда", чтобы можно было выбрать
+        любую из них вместо автоматически подобранной."""
+        sub = self.cubes_active_df[self.cubes_active_df["horizon"] == corr.horizon].dropna(
+            subset=[corr.x_var, corr.endpoint]
+        )
+        options = fit_all_forms(sub[corr.x_var], sub[corr.endpoint], corr.horizon, corr.endpoint, corr.x_var)
+        options.setdefault(corr.form, corr)  # гарантируем, что автоформа есть в списке
+        self.cubes_form_options = options
+
+        ordered = [f for f in ("linear", "log", "power", "exp", "poly2") if f in options]
+        labels = [self._cubes_form_label(f, options[f], auto=(f == corr.form)) for f in ordered]
+        self._cubes_form_label_map = dict(zip(labels, ordered))
+        self.cubes_form_combo.config(values=labels)
+        self.cubes_form_var.set(self._cubes_form_label(corr.form, options[corr.form], auto=True))
+
+        self.cubes_display_corr = corr
+        self._update_cubes_plot(corr)
+        self._update_cubes_qc(corr)
+
+    def _on_cubes_form_change(self, _event=None) -> None:
+        form = self._cubes_form_label_map.get(self.cubes_form_var.get())
+        if form is None or form not in self.cubes_form_options:
+            return
+        corr = self.cubes_form_options[form]
+        self.cubes_display_corr = corr
         self._update_cubes_plot(corr)
         self._update_cubes_qc(corr)
 
@@ -1913,7 +1971,7 @@ class JFunctionApp:
         yy = corr.predict(xx)
         self.cubes_ax.plot(xx, yy, color=EXCEL_ORANGE, linewidth=2)
 
-        equation = format_trendline_equation(corr.form, corr.a, corr.b)
+        equation = format_trendline_equation(corr.form, corr.a, corr.b, corr.c)
         excel_formula_corner(self.cubes_ax, yy, f"{equation}\nR²={corr.r2:.4f}", fontsize=9)
 
         x_label = "Пористость, %" if corr.x_var == "porosity_pct" else "Проницаемость, мД"
@@ -1926,7 +1984,7 @@ class JFunctionApp:
         self.cubes_canvas.draw()
 
     def on_apply_cube(self) -> None:
-        if self.cubes_selected is None:
+        if self.cubes_display_corr is None:
             messagebox.showwarning("Не выбрано", "Сначала выберите строку в таблице зависимостей.")
             return
         text = self.cubes_input_var.get().strip()
@@ -1939,7 +1997,7 @@ class JFunctionApp:
             messagebox.showerror("Ошибка", "Все значения должны быть числами через запятую.")
             return
 
-        corr = self.cubes_fits[self.cubes_selected]
+        corr = self.cubes_display_corr
         result = apply_correlation(corr, values)
         self._cubes_last_input = values
         self._cubes_last_result = result
@@ -1954,10 +2012,10 @@ class JFunctionApp:
         self.cubes_output_var.set(msg)
 
     def on_save_cube_result(self) -> None:
-        if self._cubes_last_result is None or self.cubes_selected is None:
+        if self._cubes_last_result is None or self.cubes_display_corr is None:
             messagebox.showwarning("Нет данных", "Сначала нажмите «Применить».")
             return
-        corr = self.cubes_fits[self.cubes_selected]
+        corr = self.cubes_display_corr
 
         path = filedialog.asksaveasfilename(
             title="Сохранить результат как...",

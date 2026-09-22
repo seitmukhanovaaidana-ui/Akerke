@@ -155,18 +155,25 @@ def group_by_formation(df: pd.DataFrame, horizon_col: str = "horizon") -> pd.Dat
     return out.dropna(subset=[horizon_col])
 
 
+FORM_LABELS = {
+    "linear": "линейная", "log": "логарифмическая", "power": "степенная",
+    "exp": "экспоненциальная", "poly2": "полиномиальная (2-й ст.)",
+}
+
+
 @dataclass(frozen=True)
 class Correlation:
     horizon: str
     endpoint: str
     x_var: str
-    form: str  # "linear" | "log" | "power" | "exp"
+    form: str  # "linear" | "log" | "power" | "exp" | "poly2"
     a: float
     b: float
     r2: float
     n: int
     x_min: float
     x_max: float
+    c: float = 0.0  # коэффициент при x² - используется только формой "poly2"
 
     def predict(self, x):
         x = np.asarray(x, dtype=float)
@@ -178,6 +185,8 @@ class Correlation:
             return self.a * np.power(x, self.b)
         if self.form == "exp":
             return self.a * np.exp(self.b * x)
+        if self.form == "poly2":
+            return self.a + self.b * x + self.c * x**2
         raise ValueError(f"Неизвестная форма зависимости: {self.form}")
 
 
@@ -187,8 +196,9 @@ def _r2(y, pred) -> float:
     return float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
 
 
-def _fit_form(form: str, x: np.ndarray, y: np.ndarray) -> tuple[float, float, float] | None:
-    """Возвращает (a, b, r2) для заданной формы или None, если форма неприменима к данным."""
+def _fit_form(form: str, x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, float] | None:
+    """Возвращает (a, b, c, r2) для заданной формы или None, если форма неприменима к данным."""
+    c = 0.0
     try:
         if form == "linear":
             b, a = np.polyfit(x, y, 1)
@@ -210,15 +220,55 @@ def _fit_form(form: str, x: np.ndarray, y: np.ndarray) -> tuple[float, float, fl
             b, ln_a = np.polyfit(x, np.log(y), 1)
             a = np.exp(ln_a)
             pred = a * np.exp(b * x)
+        elif form == "poly2":
+            if len(x) < 4:  # 3 параметра - на n=3 идеальное совпадение, R² не показателен
+                return None
+            c2, c1, c0 = np.polyfit(x, y, 2)
+            a, b, c = float(c0), float(c1), float(c2)
+            pred = a + b * x + c * x**2
         else:
             raise ValueError(form)
     except (np.linalg.LinAlgError, ValueError):
         return None
-    return float(a), float(b), _r2(y, pred)
+    return float(a), float(b), float(c), _r2(y, pred)
+
+
+def fit_all_forms(x, y, horizon: str, endpoint: str, x_var: str) -> dict[str, Correlation]:
+    """
+    Считает корреляцию ОТДЕЛЬНО для каждой формы (linear/log/power/exp/
+    poly2), а не только лучшую по R² - чтобы пользователь мог сам выбрать
+    форму тренда для графика (как выбор типа линии тренда в Excel), а не
+    полагаться только на автоматический выбор. Формы, неприменимые к
+    данным (log/power при x<=0, poly2 при n<4), в словарь не попадают.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+    if len(x) < 3:
+        return {}
+
+    results: dict[str, Correlation] = {}
+    for form in ("linear", "log", "power", "exp", "poly2"):
+        fit = _fit_form(form, x, y)
+        if fit is None:
+            continue
+        a, b, c, r2 = fit
+        results[form] = Correlation(
+            horizon=horizon, endpoint=endpoint, x_var=x_var, form=form,
+            a=a, b=b, c=c, r2=r2, n=len(x), x_min=float(x.min()), x_max=float(x.max()),
+        )
+    return results
 
 
 def fit_best_correlation(x, y, horizon: str, endpoint: str, x_var: str) -> Correlation | None:
-    """Перебирает linear/log/power/exp, возвращает лучшую по R² (или None, если данных мало)."""
+    """
+    Перебирает linear/log/power/exp (БЕЗ полиномиальной - у неё лишний
+    свободный параметр, из-за чего она почти всегда "выигрывает" по R² на
+    маленькой выборке чисто за счёт переподгонки, а не реальной связи;
+    полином доступен только для ручного выбора формы, см. fit_all_forms())
+    и возвращает лучшую по R² (или None, если данных мало).
+    """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     mask = np.isfinite(x) & np.isfinite(y)
@@ -231,16 +281,16 @@ def fit_best_correlation(x, y, horizon: str, endpoint: str, x_var: str) -> Corre
         fit = _fit_form(form, x, y)
         if fit is None:
             continue
-        a, b, r2 = fit
+        a, b, c, r2 = fit
         if best is None or (r2 == r2 and r2 > best[1]):  # r2==r2 отсекает NaN
-            best = (form, r2, a, b)
+            best = (form, r2, a, b, c)
 
     if best is None:
         return None
-    form, r2, a, b = best
+    form, r2, a, b, c = best
     return Correlation(
         horizon=horizon, endpoint=endpoint, x_var=x_var, form=form,
-        a=a, b=b, r2=r2, n=len(x), x_min=float(x.min()), x_max=float(x.max()),
+        a=a, b=b, c=c, r2=r2, n=len(x), x_min=float(x.min()), x_max=float(x.max()),
     )
 
 

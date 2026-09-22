@@ -9,6 +9,7 @@ from jfunction.endpoint_cubes import (
     apply_correlation,
     check_apply_inputs,
     classify_formation,
+    fit_all_forms,
     fit_best_correlation,
     fit_endpoint_cubes,
     group_by_formation,
@@ -245,3 +246,60 @@ def test_load_endpoint_summary_docx_meta_format_has_no_horizon(tmp_path):
     assert df["horizon"].iloc[0] == ""
     assert df["porosity_pct"].iloc[0] == 34.82
     assert df["perm_mD"].iloc[0] == 112.50
+
+
+def test_fit_all_forms_returns_every_applicable_form():
+    x = np.linspace(10, 30, 8)
+    y = 0.5 * np.exp(-0.02 * x)
+
+    options = fit_all_forms(x, y, horizon="H1", endpoint="Swir", x_var="porosity_pct")
+
+    assert set(options) == {"linear", "log", "power", "exp", "poly2"}
+    assert options["exp"].a == pytest.approx(0.5, rel=1e-4)
+    assert options["exp"].b == pytest.approx(-0.02, rel=1e-3)
+    # каждая форма несёт свой собственный R², а не только у автоматически лучшей
+    assert options["linear"].r2 != options["exp"].r2
+
+
+def test_fit_all_forms_excludes_inapplicable_forms_for_nonpositive_x():
+    x = np.array([-2, -1, 0, 1, 2, 3])
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+
+    options = fit_all_forms(x, y, "H1", "Swir", "porosity_pct")
+
+    assert "log" not in options  # ln(x) не определён при x<=0
+    assert "power" not in options  # x^b не определён при x<=0
+    assert "linear" in options
+    assert "poly2" in options
+
+
+def test_fit_all_forms_poly2_requires_at_least_four_points():
+    x = np.array([1.0, 2.0, 3.0])
+    y = np.array([1.0, 4.0, 9.0])
+
+    options = fit_all_forms(x, y, "H1", "Swir", "porosity_pct")
+    assert "poly2" not in options
+
+
+def test_poly2_predict_matches_quadratic_fit():
+    x = np.linspace(1, 10, 6)
+    y = 2 + 3 * x - 0.5 * x**2
+
+    corr = fit_all_forms(x, y, "H1", "Swir", "porosity_pct")["poly2"]
+
+    assert corr.a == pytest.approx(2, abs=1e-6)
+    assert corr.b == pytest.approx(3, abs=1e-6)
+    assert corr.c == pytest.approx(-0.5, abs=1e-6)
+    assert corr.r2 == pytest.approx(1.0, abs=1e-6)
+    assert corr.predict([4.0])[0] == pytest.approx(2 + 3 * 4 - 0.5 * 16, abs=1e-6)
+
+
+def test_fit_best_correlation_never_picks_polynomial():
+    """poly2 доступен только через fit_all_forms() для ручного выбора -
+    автоматический подбор им не пользуется (лишний параметр завышает R² на
+    маленькой выборке)."""
+    x = np.linspace(10, 30, 5)
+    y = 0.5 * np.exp(-0.02 * x)
+
+    corr = fit_best_correlation(x, y, "H1", "Swir", "porosity_pct")
+    assert corr.form != "poly2"
