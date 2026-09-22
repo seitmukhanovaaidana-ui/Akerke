@@ -1401,14 +1401,11 @@ class JFunctionApp:
             self.ofp_ax.plot(sw_grid, krw_curve, color=EXCEL_BLUE, linewidth=2, linestyle="--", label="krw (единая)")
             self.ofp_ax.plot(sw_grid, kro_curve, color=EXCEL_ORANGE, linewidth=2, linestyle="--", label="kro (единая)")
 
-            excel_formula_corner(self.ofp_ax, krw_curve, f"Krw=(Sw*)^{nw_val:.3f}", color=EXCEL_BLUE)
-            excel_formula_corner(self.ofp_ax, kro_curve, f"Krow=(1-Sw*)^{now_val:.3f}", color=EXCEL_ORANGE)
-
         self.ofp_ax.set_xlabel("Sw")
         self.ofp_ax.set_ylabel("Относительная проницаемость")
         self.ofp_ax.set_title("ОФП: krw/krow(Sw) и единая кривая Кори")
         self.ofp_ax.set_ylim(bottom=0)
-        style_excel_axes(self.ofp_ax, legend=True, legend_kwargs={"loc": "lower center"})
+        style_excel_axes(self.ofp_ax, legend=True, legend_kwargs={"loc": "best"})
         self.ofp_canvas.draw()
 
     def on_export_ofp(self) -> None:
