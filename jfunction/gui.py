@@ -39,7 +39,7 @@ from .endpoint_cubes import (
 from .fit import evaluate_fixed_params, fit_by_group, fit_exponential
 from .io import load_lab_data
 from .ofp_docx_io import load_ofp_data_from_docx
-from .petro import fit_poro_perm_by_horizon, fit_poro_perm_single, load_core_petro_xlsx
+from .petro import fit_poro_perm_by_horizon, fit_poro_perm_single, group_by_strat, load_core_petro_xlsx
 from .report import save_results
 from .rocktype import classify_by_permeability
 from .scal_export import format_coreywo, format_swof
@@ -1674,7 +1674,13 @@ class JFunctionApp:
             return
 
         if self.petro_grouping_var.get() == "Мел/Юра":
-            self.petro_active_df = group_by_formation(self.petro_df)
+            # Стратиграфия (мел/юра) в этом отчёте уже проставлена геологом
+            # для каждого образца - надёжнее эвристического разбора названия
+            # горизонта (которая, например, не узнаёт код вида "K1al2-1").
+            if "strat" in self.petro_df.columns:
+                self.petro_active_df = group_by_strat(self.petro_df)
+            else:
+                self.petro_active_df = group_by_formation(self.petro_df)
         else:
             self.petro_active_df = self.petro_df
 

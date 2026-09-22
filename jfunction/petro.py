@@ -103,6 +103,25 @@ class PoroPermFit:
         return self.a * np.exp(self.b * np.asarray(poro_pct, dtype=float))
 
 
+def group_by_strat(df: pd.DataFrame, strat_col: str = "strat", horizon_col: str = "horizon") -> pd.DataFrame:
+    """
+    Группирует образцы по столбцу "Стратиграфия" (мел/юра/четверт.),
+    который в этом отчёте уже проставлен геологом для каждого образца -
+    в отличие от endpoint_cubes.group_by_formation(), которая угадывает
+    мел/юра по названию горизонта и может ошибаться на кодах вида
+    "K1al2-1" (не содержат кириллического "альб" и т.п., поэтому
+    остаются неклассифицированными). Возвращает копию df, где
+    horizon_col заменён на strat_col; строки не "мел"/"юра" (например,
+    "четверт.") или без стратиграфии отбрасываются.
+    """
+    if strat_col not in df.columns:
+        raise ValueError(f"В данных нет столбца «{strat_col}» (стратиграфия).")
+    normalized = df[strat_col].astype(str).str.strip().str.lower()
+    out = df.copy()
+    out[horizon_col] = normalized
+    return out[normalized.isin(["мел", "юра"])]
+
+
 def _fit_poro_perm(x: np.ndarray, y_perm: np.ndarray) -> tuple[float, float, float]:
     """МНК k=a*exp(b*Кп) по ln(k) от Кп. Возвращает (a, b, r2)."""
     y = np.log(y_perm)

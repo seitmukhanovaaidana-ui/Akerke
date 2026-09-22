@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jfunction.petro import fit_poro_perm_by_horizon, fit_poro_perm_single
+from jfunction.petro import fit_poro_perm_by_horizon, fit_poro_perm_single, group_by_strat
 
 
 def _synthetic_horizon(horizon, n, a, b, seed):
@@ -70,3 +70,45 @@ def test_fit_poro_perm_single_combines_arbitrary_subset():
 def test_fit_poro_perm_single_none_below_min_samples():
     df = _synthetic_horizon("Ю-II", 2, 0.5, 0.15, seed=1)
     assert fit_poro_perm_single(df, label="Ю-II", min_samples=3) is None
+
+
+def test_group_by_strat_uses_authoritative_column_not_horizon_name():
+    """"K1al2-1" не распознаётся эвристикой по названию, но strat="мел" уже проставлен."""
+    df = pd.DataFrame(
+        {
+            "horizon": ["I альбский", "K1al2-1", "Ю-II", "Ю-VI", "Ю-VI", "Q1"],
+            "strat": ["мел", "мел", "юра", "юра", "юра", "четверт"],
+            "poro_open": [20, 21, 22, 23, 24, 25],
+            "perm_gas": [1, 2, 3, 4, 5, 6],
+        }
+    )
+
+    grouped = group_by_strat(df)
+
+    assert set(grouped["horizon"]) == {"мел", "юра"}
+    assert (grouped["horizon"] == "мел").sum() == 2
+    assert (grouped["horizon"] == "юра").sum() == 3  # "четверт" отброшен
+
+
+def test_group_by_strat_missing_column_raises():
+    df = pd.DataFrame({"horizon": ["Ю-II"], "poro_open": [20], "perm_gas": [1]})
+    with pytest.raises(ValueError):
+        group_by_strat(df)
+
+
+def test_group_by_strat_combines_enough_samples_for_fit():
+    """Мел-горизонты по отдельности малочисленны, но вместе проходят порог min_samples."""
+    df = pd.concat(
+        [
+            _synthetic_horizon("I альбский", 4, 0.3, 0.1, seed=10),
+            _synthetic_horizon("K1al2-1", 4, 0.3, 0.1, seed=11),
+        ],
+        ignore_index=True,
+    )
+    df["strat"] = "мел"
+
+    grouped = group_by_strat(df)
+    fits = fit_poro_perm_by_horizon(grouped, min_samples=5)
+
+    assert list(fits["horizon"]) == ["мел"]
+    assert fits.iloc[0]["n"] == 8
