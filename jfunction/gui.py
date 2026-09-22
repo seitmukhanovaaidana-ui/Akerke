@@ -29,6 +29,7 @@ from .endpoint_cubes import (
     check_apply_inputs,
     fit_endpoint_cubes,
     group_by_formation,
+    load_endpoint_summary_docx,
     load_endpoint_summary_xlsx,
     quality_flags,
     quality_level,
@@ -353,7 +354,7 @@ class JFunctionApp:
         top.pack(fill="x")
 
         ttk.Button(
-            top, text="Загрузить сводную таблицу ОФП (.xlsx)...", command=self.on_load_cubes
+            top, text="Загрузить сводную таблицу ОФП (.xlsx/.docx)...", command=self.on_load_cubes
         ).pack(side="left")
         self.cubes_file_label = ttk.Label(top, text="Файл не загружен")
         self.cubes_file_label.pack(side="left", padx=10)
@@ -1784,25 +1785,54 @@ class JFunctionApp:
 
     def on_load_cubes(self) -> None:
         path = filedialog.askopenfilename(
-            title="Выберите файл со сводной таблицей ОФП (лист «ОФП», Таблица 2.4.2)",
-            filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")],
+            title="Выберите сводную таблицу ОФП (.xlsx) или Word-отчёт лаборатории по ОФП (.docx)",
+            filetypes=[
+                ("Excel и Word", "*.xlsx;*.docx"), ("Excel", "*.xlsx"), ("Word", "*.docx"),
+                ("Все файлы", "*.*"),
+            ],
         )
         if not path:
             return
         try:
-            df = load_endpoint_summary_xlsx(path)
+            if path.lower().endswith(".docx"):
+                df = load_endpoint_summary_docx(path)
+            else:
+                df = load_endpoint_summary_xlsx(path)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Ошибка загрузки", str(exc))
             return
 
         if df.empty:
-            messagebox.showwarning("Нет данных", "Не удалось найти данные на листе «ОФП».")
+            messagebox.showwarning(
+                "Нет данных", "Не удалось найти данные (строки таблицы ОФП или кривые Sw/krw/krow)."
+            )
             return
 
         self.cubes_df = df
         self.cubes_file_label.config(
             text=f"{Path(path).name}  ({len(df)} образцов, {df['horizon'].nunique()} горизонтов)"
         )
+
+        missing_horizon = int((df["horizon"].astype(str).str.strip() == "").sum())
+        missing_xvars = int(df[["porosity_pct", "perm_mD"]].isna().all(axis=1).sum())
+        warnings = []
+        if missing_horizon:
+            warnings.append(
+                f"у {missing_horizon} из {len(df)} образцов не указан горизонт (в "
+                "сыром отчёте лаборатории горизонт обычно не пишут - его "
+                "сопоставляют геологи отдельно); такие образцы не попадут ни в "
+                "один горизонт и ни в группу «Мел/Юра»."
+            )
+        if missing_xvars:
+            warnings.append(
+                f"у {missing_xvars} из {len(df)} образцов нет пористости и "
+                "проницаемости (этот отчёт содержит только кривые ОФП, без "
+                "петрофизики керна) - построить для них куб Кп/k → концевая точка "
+                "не получится."
+            )
+        if warnings:
+            messagebox.showwarning("Неполные данные", "\n\n".join(warnings))
+
         self.on_run_cubes()
 
     def on_run_cubes(self) -> None:

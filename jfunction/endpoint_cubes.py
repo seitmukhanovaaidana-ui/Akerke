@@ -83,16 +83,63 @@ def load_endpoint_summary_xlsx(path: str, sheet_name: str = "ОФП") -> pd.Data
     return pd.DataFrame(rows)
 
 
+SUMMARY_DOCX_COLUMNS = (
+    "well", "model", "horizon", "porosity_pct", "perm_mD", "Swir", "Sor", "krwmax", "krow_swc",
+)
+
+
+def load_endpoint_summary_docx(path: str) -> pd.DataFrame:
+    """
+    Читает тот же набор образцов (well/model/horizon/Кп/k/Swir/Sor/krwmax),
+    что и load_endpoint_summary_xlsx(), но напрямую из "сырого" Word-отчёта
+    лаборатории по ОФП - см. ofp_docx_io.load_ofp_data_from_docx() (там же
+    описаны оба поддерживаемых формата отчёта). Одна строка на образец/
+    модель - кривая Sw/krw/krow сворачивается до её собственных Swir/Sor/
+    krwmax/пористости/проницаемости, уже посчитанных при разборе отчёта.
+
+    ВАЖНО: не все форматы отчёта содержат горизонт (лаборатория обычно
+    указывает только скважину/модель, а горизонт сопоставляется отдельно
+    геологом) - в этом случае столбец horizon будет пустым, и группировка
+    по горизонту/"Мел/Юра" не даст результатов для этих образцов, пока
+    горизонт не будет проставлен (например, вручную в экспортированной
+    таблице или через сводный xlsx, где он уже есть).
+    """
+    from .ofp_docx_io import load_ofp_data_from_docx
+
+    curve_df = load_ofp_data_from_docx(path)
+    if curve_df.empty:
+        return pd.DataFrame(columns=list(SUMMARY_DOCX_COLUMNS))
+
+    per_model = curve_df.drop_duplicates(subset=["model"])
+    out = pd.DataFrame(
+        {
+            "well": per_model["well"],
+            "model": per_model["model"],
+            "horizon": per_model["horizon"] if "horizon" in per_model.columns else "",
+            "porosity_pct": per_model["porosity_pct"],
+            "perm_mD": per_model["perm_mD"],
+            "Swir": per_model["Swir"],
+            "Sor": per_model["Sor"],
+            "krwmax": per_model["krwmax"],
+            "krow_swc": per_model["krow_swc"],
+        }
+    )
+    return out.reset_index(drop=True)
+
+
 def classify_formation(horizon: str) -> str | None:
     """
     Укрупнённая классификация горизонта до мел/юра по названию (апт,
-    альб, неоком, "мел..." -> мел; Ю-*, "юра", "...юрский" -> юра).
-    Возвращает None, если горизонт не удалось классифицировать.
+    альб, неоком, валанжин, "мел..." -> мел; Ю-*, "юра", "...юрский" ->
+    юра). Возвращает None, если горизонт не удалось классифицировать
+    (пусто, триас и т.п. - триас старше юры, к мелу/юре не относится).
     """
     h = str(horizon).strip().lower()
+    if not h:
+        return None
     if h.startswith("ю-") or "юр" in h:
         return "юра"
-    if any(key in h for key in ("мел", "альб", "апт", "неоком")):
+    if any(key in h for key in ("мел", "альб", "апт", "неоком", "валанжин", "готерив", "баррем")):
         return "мел"
     return None
 

@@ -12,6 +12,7 @@ from jfunction.endpoint_cubes import (
     fit_best_correlation,
     fit_endpoint_cubes,
     group_by_formation,
+    load_endpoint_summary_docx,
     quality_flags,
     quality_level,
 )
@@ -162,3 +163,85 @@ def test_check_apply_inputs_no_warnings_when_in_range_and_physical():
         a=0.6, b=-0.01, r2=0.9, n=10, x_min=10, x_max=30,
     )
     assert check_apply_inputs(corr, [15, 20, 25]) == []
+
+
+def test_classify_formation_recognizes_valanginian_as_mel():
+    assert classify_formation("Валанжин") == "мел"
+    assert classify_formation("валанжинский ярус") == "мел"
+    assert classify_formation("Триас") is None
+    assert classify_formation("") is None
+
+
+def test_load_endpoint_summary_docx_flat_format(tmp_path):
+    """Формат 2 (Горизонт/Скважина/Идентификатор образца/Sw/krw/krow) - есть горизонт, нет Кп/k."""
+    import docx
+
+    doc = docx.Document()
+    table = doc.add_table(rows=5, cols=6)
+    header = table.rows[0].cells
+    for i, name in enumerate(["Горизонт", "Скважина", "Идентификатор образца", "Sw", "krw", "krow"]):
+        header[i].text = name
+    rows = [
+        ("Валанжин", "700", "Модель 1", "0.412", "0.000", "1.000"),
+        ("Валанжин", "700", "Модель 1", "0.709", "0.155", "0.000"),
+        ("Юра", "800", "Модель 2", "0.300", "0.000", "1.000"),
+        ("Юра", "800", "Модель 2", "0.600", "0.200", "0.000"),
+    ]
+    for i, row in enumerate(rows, start=1):
+        cells = table.rows[i].cells
+        for j, value in enumerate(row):
+            cells[j].text = value
+    path = tmp_path / "ofp_flat.docx"
+    doc.save(path)
+
+    df = load_endpoint_summary_docx(path)
+
+    assert len(df) == 2
+    assert set(df["horizon"]) == {"Валанжин", "Юра"}
+    assert df["porosity_pct"].isna().all()
+    valanzhin = df[df["horizon"] == "Валанжин"].iloc[0]
+    assert valanzhin["Swir"] == 0.412
+    assert valanzhin["krwmax"] == 0.155
+
+
+def test_load_endpoint_summary_docx_meta_format_has_no_horizon(tmp_path):
+    """Формат 1 (метаданные + кривая) не содержит горизонт - столбец должен остаться пустым."""
+    import docx
+
+    doc = docx.Document()
+    meta_rows = [
+        ("Данные по керну (модели образцов)", "Данные по керну (модели образцов)"),
+        ("№ модели образцов", "Модель №1"),
+        ("Скважина", "300"),
+        ("Пористость, %", "34,82"),
+        ("Проницаемость по газу, мД", "112,50"),
+        ("Остаточная водонасыщенность (Swi), доли ед.", "0,262"),
+        ("Остаточная нефтенасыщенность (Sow), доли ед.", "0,224"),
+    ]
+    meta_table = doc.add_table(rows=1 + len(meta_rows), cols=2)
+    meta_table.rows[0].cells[0].text = "Наименование"
+    meta_table.rows[0].cells[1].text = "Значение"
+    for i, (label, value) in enumerate(meta_rows, start=1):
+        meta_table.rows[i].cells[0].text = label
+        meta_table.rows[i].cells[1].text = value
+
+    curve_table = doc.add_table(rows=3, cols=5)
+    header = curve_table.rows[0].cells
+    header[2].text = "Sw"
+    header[3].text = "krw"
+    header[4].text = "krow"
+    for i, (sw, krw, krow) in enumerate([("0,26", "0,000", "1"), ("0,78", "0,308", "0,000")], start=1):
+        cells = curve_table.rows[i].cells
+        cells[2].text = sw
+        cells[3].text = krw
+        cells[4].text = krow
+
+    path = tmp_path / "ofp_meta.docx"
+    doc.save(path)
+
+    df = load_endpoint_summary_docx(path)
+
+    assert len(df) == 1
+    assert df["horizon"].iloc[0] == ""
+    assert df["porosity_pct"].iloc[0] == 34.82
+    assert df["perm_mD"].iloc[0] == 112.50
